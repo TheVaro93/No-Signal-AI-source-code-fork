@@ -1,214 +1,276 @@
-// ── Config ─────────────────────────────────────────────────
-// Empty string = same origin (works both locally and on Railway)
-// If the frontend is on a separate domain, set this to the full backend URL.
+// ══════════════════════════════════════════════════════════
+// CONFIG & SUPABASE
+// ══════════════════════════════════════════════════════════
 const BACKEND_URL = '';
+let sb = null; // Supabase client
 
-// ── State ──────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════════════════
 const state = {
-  character: null,   // { name, personality, tone, lore }
-  sessions: [],      // [{ id, name, messages: [] }]
+  user: null,            // Supabase user object
+  profile: null,         // { username, bio, avatar_color, persona_name, persona_desc }
+  characters: [],        // user's own characters from Supabase
+  community: [],         // public characters from other users
+  sessions: [],          // [{ id, name, characterId, messages: [] }] - localStorage
   activeSession: null,
+  activeCharacter: null, // the selected character object
+  activeTab: 'mine',     // 'mine' | 'discover'
   isWaiting: false,
 };
 
-// ── Persistence (localStorage) ─────────────────────────────
-function save() {
-  localStorage.setItem('nosignal', JSON.stringify({
-    character: state.character,
-    sessions:  state.sessions,
+// ══════════════════════════════════════════════════════════
+// DOM HELPERS
+// ══════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+
+// ══════════════════════════════════════════════════════════
+// SUPABASE INIT
+// ══════════════════════════════════════════════════════════
+async function initSupabase() {
+  const res = await fetch('/api/config');
+  const { supabaseUrl, supabaseAnonKey } = await res.json();
+  sb = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+  window.sb = sb;
+}
+
+// ══════════════════════════════════════════════════════════
+// AUTH
+// ══════════════════════════════════════════════════════════
+async function checkAuth() {
+  const { data } = await sb.auth.getSession();
+  if (!data?.session) {
+    window.location.replace('/auth.html');
+    return;
+  }
+  state.user = data.session.user;
+}
+
+async function logout() {
+  await sb.auth.signOut();
+  window.location.replace('/auth.html');
+}
+
+// ══════════════════════════════════════════════════════════
+// USER PROFILE
+// ══════════════════════════════════════════════════════════
+async function loadProfile() {
+  const { data, error } = await sb
+    .from('profiles')
+    .select('*')
+    .eq('id', state.user.id)
+    .single();
+
+  if (error || !data) {
+    // Profile might not exist yet — create a default one
+    const defaultProfile = {
+      id: state.user.id,
+      username: state.user.email.split('@')[0],
+      bio: '',
+      avatar_color: '#7c6af7',
+      persona_name: '',
+      persona_desc: '',
+    };
+    const { data: created, error: createErr } = await sb
+      .from('profiles')
+      .upsert(defaultProfile)
+      .select()
+      .single();
+
+    if (createErr) {
+      console.error('Failed to create profile:', createErr);
+      state.profile = defaultProfile;
+    } else {
+      state.profile = created;
+    }
+  } else {
+    state.profile = data;
+  }
+}
+
+async function saveProfile(data) {
+  const { error } = await sb
+    .from('profiles')
+    .upsert({ id: state.user.id, ...data });
+
+  if (error) {
+    console.error('Failed to save profile:', error);
+    throw error;
+  }
+  state.profile = { ...state.profile, ...data };
+}
+
+// ══════════════════════════════════════════════════════════
+// CHARACTERS (Supabase)
+// ══════════════════════════════════════════════════════════
+async function loadMyCharacters() {
+  const { data, error } = await sb
+    .from('characters')
+    .select('*')
+    .eq('creator_id', state.user.id)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('Failed to load characters:', error);
+    return;
+  }
+  state.characters = data ?? [];
+}
+
+async function createCharacter(data) {
+  const { data: inserted, error } = await sb
+    .from('characters')
+    .insert({
+      ...data,
+      creator_id: state.user.id,
+      creator_username: state.profile?.username ?? '',
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Failed to create character:', error);
+    throw error;
+  }
+  return inserted;
+}
+
+async function updateCharacter(id, data) {
+  const { error } = await sb
+    .from('characters')
+    .update(data)
+    .eq('id', id)
+    .eq('creator_id', state.user.id);
+
+  if (error) {
+    console.error('Failed to update character:', error);
+    throw error;
+  }
+}
+
+async function deleteCharacter(id) {
+  const { error } = await sb
+    .from('characters')
+    .delete()
+    .eq('id', id)
+    .eq('creator_id', state.user.id);
+
+  if (error) {
+    console.error('Failed to delete character:', error);
+    throw error;
+  }
+  state.characters = state.characters.filter(c => c.id !== id);
+
+  // Deselect if this was the active character
+  if (state.activeCharacter?.id === id) {
+    state.activeCharacter = null;
+    renderActiveCharacter();
+  }
+}
+
+async function togglePublic(id, isPublic) {
+  const { error } = await sb
+    .from('characters')
+    .update({ is_public: isPublic })
+    .eq('id', id)
+    .eq('creator_id', state.user.id);
+
+  if (error) {
+    console.error('Failed to toggle public:', error);
+    throw error;
+  }
+  const char = state.characters.find(c => c.id === id);
+  if (char) char.is_public = isPublic;
+}
+
+// ══════════════════════════════════════════════════════════
+// COMMUNITY
+// ══════════════════════════════════════════════════════════
+async function loadCommunity() {
+  const { data, error } = await sb
+    .from('characters')
+    .select('*')
+    .eq('is_public', true)
+    .neq('creator_id', state.user.id)
+    .order('interactions', { ascending: false });
+
+  if (error) {
+    console.error('Failed to load community:', error);
+    return;
+  }
+  state.community = data ?? [];
+}
+
+async function incrementInteractions(id) {
+  await sb.rpc('increment_interactions', { char_id: id }).catch(err => {
+    console.error('Failed to increment interactions:', err);
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+// PERSISTENCE (localStorage for sessions)
+// ══════════════════════════════════════════════════════════
+function saveSessions() {
+  localStorage.setItem('nosignal_sessions', JSON.stringify({
+    sessions:      state.sessions,
     activeSession: state.activeSession,
   }));
 }
 
-function load() {
-  const raw = localStorage.getItem('nosignal');
+function loadSessions() {
+  const raw = localStorage.getItem('nosignal_sessions');
   if (!raw) return;
-  const data = JSON.parse(raw);
-  state.character     = data.character     ?? null;
-  state.sessions      = data.sessions      ?? [];
-  state.activeSession = data.activeSession ?? null;
-}
-
-// ── DOM refs ───────────────────────────────────────────────
-const $ = id => document.getElementById(id);
-
-const els = {
-  characterName:   $('character-name'),
-  characterStatus: $('character-status'),
-  characterAvatar: $('character-avatar'),
-  sessionList:     $('session-list'),
-  messages:        $('messages'),
-  chatTitle:       $('chat-title'),
-  userInput:       $('user-input'),
-  btnSend:         $('btn-send'),
-  emptyState:      $('empty-state'),
-
-  // modals
-  modalCharacter:  $('modal-character'),
-  modalMemory:     $('modal-memory'),
-  charName:        $('char-name'),
-  charPersonality: $('char-personality'),
-  charTone:        $('char-tone'),
-  charLore:        $('char-lore'),
-  memoryShort:     $('memory-short'),
-  memoryLong:      $('memory-long'),
-};
-
-// ── Rendering ──────────────────────────────────────────────
-function renderCharacter() {
-  if (state.character) {
-    els.characterName.textContent   = state.character.name;
-    els.characterStatus.textContent = state.character.personality;
-    els.characterAvatar.textContent = state.character.name[0].toUpperCase();
-  } else {
-    els.characterName.textContent   = 'No character';
-    els.characterStatus.textContent = 'Select or create one';
-    els.characterAvatar.textContent = '?';
+  try {
+    const data = JSON.parse(raw);
+    state.sessions      = data.sessions      ?? [];
+    state.activeSession = data.activeSession ?? null;
+  } catch (e) {
+    console.error('Failed to parse sessions:', e);
   }
 }
 
-function renderSessions() {
-  els.sessionList.innerHTML = '';
-  state.sessions.forEach(session => {
-    const li = document.createElement('li');
-    li.textContent = session.name;
-    li.dataset.id  = session.id;
-    if (session.id === state.activeSession) li.classList.add('active');
-    li.addEventListener('click', () => activateSession(session.id));
-    els.sessionList.appendChild(li);
-  });
-}
-
-function renderMessages() {
-  const session = getCurrentSession();
-  els.messages.innerHTML = '';
-
-  if (!session || session.messages.length === 0) {
-    els.messages.appendChild(els.emptyState);
-    els.emptyState.classList.remove('hidden');
-    return;
-  }
-
-  session.messages.forEach(msg => appendMessage(msg.role, msg.content, false));
-  els.messages.scrollTop = els.messages.scrollHeight;
-}
-
-function appendMessage(role, content, scroll = true) {
-  // Remove empty state if present
-  const empty = els.messages.querySelector('#empty-state');
-  if (empty) empty.remove();
-
-  const senderLabel = role === 'user'
-    ? 'You'
-    : (state.character?.name ?? 'AI');
-
-  const div = document.createElement('div');
-  div.className = `message ${role}`;
-  div.innerHTML = `
-    <span class="message-sender">${senderLabel}</span>
-    <div class="message-bubble">${escapeHtml(content)}</div>
-  `;
-  els.messages.appendChild(div);
-
-  if (scroll) els.messages.scrollTop = els.messages.scrollHeight;
-  return div;
-}
-
-function showTypingIndicator() {
-  const div = document.createElement('div');
-  div.className = 'message assistant typing-indicator';
-  div.id = 'typing';
-  div.innerHTML = `
-    <span class="message-sender">${state.character?.name ?? 'AI'}</span>
-    <div class="message-bubble">
-      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-    </div>
-  `;
-  els.messages.appendChild(div);
-  els.messages.scrollTop = els.messages.scrollHeight;
-}
-
-function removeTypingIndicator() {
-  $('typing')?.remove();
-}
-
-function setInputEnabled(enabled) {
-  els.userInput.disabled = !enabled;
-  els.btnSend.disabled   = !enabled;
-}
-
-// ── Session logic ──────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// SESSIONS
+// ══════════════════════════════════════════════════════════
 function getCurrentSession() {
   return state.sessions.find(s => s.id === state.activeSession) ?? null;
+}
+
+function createSession(character) {
+  const id   = crypto.randomUUID();
+  const name = `${character.name} — Session ${state.sessions.length + 1}`;
+  state.sessions.push({ id, name, characterId: character.id, messages: [] });
+  saveSessions();
+  renderSessions();
+  activateSession(id);
 }
 
 function activateSession(id) {
   state.activeSession = id;
   const session = getCurrentSession();
-  els.chatTitle.textContent = session?.name ?? 'Session';
+  $('chat-title').textContent = session?.name ?? 'Session';
+
+  // Restore the character for this session
+  if (session) {
+    const charId = session.characterId;
+    const char = [...state.characters, ...state.community].find(c => c.id === charId) ?? null;
+    state.activeCharacter = char;
+    renderActiveCharacter();
+  }
+
   renderSessions();
   renderMessages();
   setInputEnabled(!!session && !state.isWaiting);
-  save();
+  saveSessions();
 }
 
-function createSession() {
-  const id   = crypto.randomUUID();
-  const name = `Session ${state.sessions.length + 1}`;
-  state.sessions.push({ id, name, messages: [] });
-  save();
-  renderSessions();
-  activateSession(id);
-}
-
-// ── Character logic ────────────────────────────────────────
-function openCharacterModal() {
-  if (state.character) {
-    els.charName.value        = state.character.name;
-    els.charPersonality.value = state.character.personality;
-    els.charTone.value        = state.character.tone;
-    els.charLore.value        = state.character.lore;
-  } else {
-    els.charName.value = els.charPersonality.value = els.charTone.value = els.charLore.value = '';
-  }
-  els.modalCharacter.classList.remove('hidden');
-  els.charName.focus();
-}
-
-function saveCharacter() {
-  const name = els.charName.value.trim();
-  if (!name) { els.charName.focus(); return; }
-
-  state.character = {
-    name,
-    personality: els.charPersonality.value.trim(),
-    tone:        els.charTone.value.trim(),
-    lore:        els.charLore.value.trim(),
-  };
-  els.modalCharacter.classList.add('hidden');
-  renderCharacter();
-  save();
-}
-
-// ── Memory viewer ──────────────────────────────────────────
-function openMemoryModal() {
-  const session = getCurrentSession();
-  if (!session) return;
-
-  const recent = session.messages.slice(-6);
-  els.memoryShort.textContent = recent.length
-    ? recent.map(m => `[${m.role}] ${m.content}`).join('\n\n')
-    : 'No messages yet.';
-
-  els.memoryLong.textContent = session.summary ?? 'No summary yet.';
-  els.modalMemory.classList.remove('hidden');
-}
-
-// ── AI call ────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// CHAT / AI
+// ══════════════════════════════════════════════════════════
 async function sendMessage() {
   if (state.isWaiting) return;
 
-  const content = els.userInput.value.trim();
+  const content = $('user-input').value.trim();
   if (!content) return;
 
   const session = getCurrentSession();
@@ -217,117 +279,512 @@ async function sendMessage() {
   // Add user message
   session.messages.push({ role: 'user', content });
   appendMessage('user', content);
-  els.userInput.value = '';
+  $('user-input').value = '';
   autoResize();
 
   state.isWaiting = true;
   setInputEnabled(false);
   showTypingIndicator();
-  save();
+  saveSessions();
 
   try {
-    const reply = await callAI(session);
+    const { data: { session: authSession } } = await sb.auth.getSession();
+    const token = authSession?.access_token;
+    const reply = await callAI(session, token);
     session.messages.push({ role: 'assistant', content: reply });
     removeTypingIndicator();
     appendMessage('assistant', reply);
   } catch (err) {
     removeTypingIndicator();
-    appendMessage('assistant', `⚠️ Error: ${err.message}`);
+    appendMessage('assistant', `Error: ${err.message}`);
   }
 
   state.isWaiting = false;
   setInputEnabled(true);
-  els.userInput.focus();
-  save();
+  $('user-input').focus();
+  saveSessions();
 }
 
-/**
- * Calls the backend /chat endpoint.
- * Falls back to a placeholder response when the backend is not yet available.
- */
-async function callAI(session) {
+async function callAI(session, token) {
   const payload = {
-    character: state.character,
-    messages:  session.messages,
-    summary:   session.summary ?? null,
+    character:   state.activeCharacter,
+    messages:    session.messages,
+    summary:     session.summary ?? null,
+    userPersona: {
+      name: state.profile?.persona_name ?? '',
+      desc: state.profile?.persona_desc ?? '',
+    },
   };
 
-  try {
-    const res = await fetch(`${BACKEND_URL}/chat`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload),
-    });
+  const res = await fetch(`${BACKEND_URL}/chat`, {
+    method:  'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
 
-    if (!res.ok) throw new Error(`Server error ${res.status}`);
-    const data = await res.json();
-    return data.reply;
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error ?? `Server error ${res.status}`);
+  }
+
+  const data = await res.json();
+  return data.reply;
+}
+
+// ══════════════════════════════════════════════════════════
+// SETTINGS MODAL
+// ══════════════════════════════════════════════════════════
+function openSettings() {
+  const profile = state.profile ?? {};
+
+  $('settings-username').value     = profile.username     ?? '';
+  $('settings-bio').value          = profile.bio          ?? '';
+  $('settings-persona-name').value = profile.persona_name ?? '';
+  $('settings-persona-desc').value = profile.persona_desc ?? '';
+
+  // Mark active color swatch
+  document.querySelectorAll('.color-swatch').forEach(swatch => {
+    swatch.classList.toggle('selected', swatch.dataset.color === (profile.avatar_color ?? '#7c6af7'));
+  });
+
+  // Reset to profile tab
+  switchSettingsTab('profile');
+  $('modal-settings').classList.remove('hidden');
+}
+
+async function saveSettings() {
+  const username     = $('settings-username').value.trim();
+  const bio          = $('settings-bio').value.trim();
+  const persona_name = $('settings-persona-name').value.trim();
+  const persona_desc = $('settings-persona-desc').value.trim();
+
+  const selectedSwatch = document.querySelector('.color-swatch.selected');
+  const avatar_color = selectedSwatch?.dataset.color ?? state.profile?.avatar_color ?? '#7c6af7';
+
+  const btn = $('btn-save-settings');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  try {
+    await saveProfile({ username, bio, avatar_color, persona_name, persona_desc });
+    $('modal-settings').classList.add('hidden');
+    renderUserBar();
   } catch (err) {
-    throw new Error(`Cannot reach /chat: ${err.message}`);
+    console.error('Save settings failed:', err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save';
   }
 }
 
-// ── Utilities ──────────────────────────────────────────────
+function switchSettingsTab(tab) {
+  document.querySelectorAll('.settings-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.stab === tab);
+  });
+  document.querySelectorAll('.settings-section').forEach(s => {
+    s.classList.toggle('hidden', s.id !== `stab-${tab}`);
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+// RENDER
+// ══════════════════════════════════════════════════════════
+function renderUserBar() {
+  const profile = state.profile;
+  const initial = (profile?.username ?? state.user?.email ?? '?')[0].toUpperCase();
+  const color   = profile?.avatar_color ?? '#7c6af7';
+
+  const avatar = $('user-avatar-small');
+  avatar.textContent = initial;
+  avatar.style.background = color;
+
+  $('user-username').textContent   = profile?.username ?? 'User';
+  $('user-email-small').textContent = state.user?.email ?? '';
+}
+
+function renderCharacterList() {
+  const container = $('my-chars-list');
+  container.innerHTML = '';
+
+  if (state.characters.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'list-empty';
+    empty.textContent = 'No characters yet.';
+    container.appendChild(empty);
+    return;
+  }
+
+  state.characters.forEach(char => {
+    const card = document.createElement('div');
+    card.className = 'char-card' + (state.activeCharacter?.id === char.id ? ' active' : '');
+    card.innerHTML = `
+      <div class="char-card-avatar" style="background:${state.profile?.avatar_color ?? '#7c6af7'}">${char.name[0].toUpperCase()}</div>
+      <div class="char-card-body">
+        <span class="char-card-name">${escapeHtml(char.name)}</span>
+        <span class="char-card-sub">${escapeHtml(char.personality ?? '')}</span>
+      </div>
+      <div class="char-actions">
+        <button class="btn-icon char-btn-public" title="${char.is_public ? 'Make private' : 'Make public'}">${char.is_public ? '🌐' : '🔒'}</button>
+        <button class="btn-icon char-btn-edit" title="Edit">✏</button>
+        <button class="btn-icon char-btn-delete" title="Delete">✕</button>
+      </div>
+    `;
+
+    // Select character (click on card body)
+    card.querySelector('.char-card-body').addEventListener('click', () => {
+      state.activeCharacter = char;
+      renderActiveCharacter();
+      renderCharacterList();
+    });
+
+    // Toggle public
+    card.querySelector('.char-btn-public').addEventListener('click', async e => {
+      e.stopPropagation();
+      const newVal = !char.is_public;
+      try {
+        await togglePublic(char.id, newVal);
+        renderCharacterList();
+      } catch (err) {
+        console.error(err);
+      }
+    });
+
+    // Edit
+    card.querySelector('.char-btn-edit').addEventListener('click', e => {
+      e.stopPropagation();
+      openCharacterModal(char);
+    });
+
+    // Delete
+    card.querySelector('.char-btn-delete').addEventListener('click', async e => {
+      e.stopPropagation();
+      if (!confirm(`Delete "${char.name}"?`)) return;
+      try {
+        await deleteCharacter(char.id);
+        renderCharacterList();
+      } catch (err) {
+        console.error(err);
+      }
+    });
+
+    container.appendChild(card);
+  });
+}
+
+function renderCommunity() {
+  const container = $('community-list');
+  container.innerHTML = '';
+
+  if (state.community.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'list-empty';
+    empty.textContent = 'No community characters yet.';
+    container.appendChild(empty);
+    return;
+  }
+
+  state.community.forEach(char => {
+    const card = document.createElement('div');
+    card.className = 'community-card' + (state.activeCharacter?.id === char.id ? ' active' : '');
+    card.innerHTML = `
+      <div class="char-card-avatar" style="background:#5ab4e0">${char.name[0].toUpperCase()}</div>
+      <div class="char-card-body">
+        <span class="char-card-name">${escapeHtml(char.name)}</span>
+        <span class="char-card-sub">${escapeHtml(char.personality ?? '')}</span>
+        <span class="char-card-creator">by ${escapeHtml(char.creator_username ?? 'Unknown')}</span>
+      </div>
+    `;
+
+    card.addEventListener('click', async () => {
+      state.activeCharacter = char;
+      renderActiveCharacter();
+      renderCommunity();
+      await incrementInteractions(char.id);
+    });
+
+    container.appendChild(card);
+  });
+}
+
+function renderSessions() {
+  const list = $('session-list');
+  list.innerHTML = '';
+
+  state.sessions.forEach(session => {
+    const li = document.createElement('li');
+    li.textContent = session.name;
+    li.dataset.id  = session.id;
+    if (session.id === state.activeSession) li.classList.add('active');
+    li.addEventListener('click', () => activateSession(session.id));
+    list.appendChild(li);
+  });
+}
+
+function renderMessages() {
+  const session = getCurrentSession();
+  const messagesEl = $('messages');
+  messagesEl.innerHTML = '';
+
+  const emptyState = document.createElement('div');
+  emptyState.id = 'empty-state';
+  emptyState.innerHTML = '<p class="empty-icon">◈</p><p>Start a session to begin the roleplay.</p>';
+
+  if (!session || session.messages.length === 0) {
+    messagesEl.appendChild(emptyState);
+    return;
+  }
+
+  session.messages.forEach(msg => appendMessage(msg.role, msg.content, false));
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function renderActiveCharacter() {
+  const char = state.activeCharacter;
+  if (char) {
+    $('character-name').textContent   = char.name;
+    $('character-status').textContent = char.personality ?? '';
+    $('character-avatar').textContent = char.name[0].toUpperCase();
+  } else {
+    $('character-name').textContent   = 'No character';
+    $('character-status').textContent = 'Select or create one';
+    $('character-avatar').textContent = '?';
+  }
+}
+
+function appendMessage(role, content, scroll = true) {
+  const messagesEl = $('messages');
+
+  const empty = messagesEl.querySelector('#empty-state');
+  if (empty) empty.remove();
+
+  const senderLabel = role === 'user'
+    ? (state.profile?.persona_name || 'You')
+    : (state.activeCharacter?.name ?? 'AI');
+
+  const div = document.createElement('div');
+  div.className = `message ${role}`;
+  div.innerHTML = `
+    <span class="message-sender">${escapeHtml(senderLabel)}</span>
+    <div class="message-bubble">${escapeHtml(content)}</div>
+  `;
+  messagesEl.appendChild(div);
+
+  if (scroll) messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+function showTypingIndicator() {
+  const messagesEl = $('messages');
+  const div = document.createElement('div');
+  div.className = 'message assistant typing-indicator';
+  div.id = 'typing';
+  div.innerHTML = `
+    <span class="message-sender">${escapeHtml(state.activeCharacter?.name ?? 'AI')}</span>
+    <div class="message-bubble">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    </div>
+  `;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function removeTypingIndicator() {
+  $('typing')?.remove();
+}
+
+function setInputEnabled(enabled) {
+  $('user-input').disabled = !enabled;
+  $('btn-send').disabled   = !enabled;
+}
+
+// ══════════════════════════════════════════════════════════
+// CHARACTER MODAL
+// ══════════════════════════════════════════════════════════
+function openCharacterModal(existingChar = null) {
+  $('modal-character-title').textContent = existingChar ? 'Edit character' : 'Create a character';
+  $('char-edit-id').value      = existingChar?.id ?? '';
+  $('char-name').value         = existingChar?.name         ?? '';
+  $('char-personality').value  = existingChar?.personality  ?? '';
+  $('char-tone').value         = existingChar?.tone         ?? '';
+  $('char-lore').value         = existingChar?.lore         ?? '';
+  $('char-is-public').checked  = existingChar?.is_public    ?? false;
+
+  $('modal-character').classList.remove('hidden');
+  $('char-name').focus();
+}
+
+async function saveCharacterModal() {
+  const name = $('char-name').value.trim();
+  if (!name) { $('char-name').focus(); return; }
+
+  const charData = {
+    name,
+    personality: $('char-personality').value.trim(),
+    tone:        $('char-tone').value.trim(),
+    lore:        $('char-lore').value.trim(),
+    is_public:   $('char-is-public').checked,
+  };
+
+  const editId = $('char-edit-id').value;
+  const btn = $('btn-save-character');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  try {
+    if (editId) {
+      await updateCharacter(editId, charData);
+      const idx = state.characters.findIndex(c => c.id === editId);
+      if (idx !== -1) state.characters[idx] = { ...state.characters[idx], ...charData };
+      if (state.activeCharacter?.id === editId) {
+        state.activeCharacter = state.characters[idx];
+        renderActiveCharacter();
+      }
+    } else {
+      const newChar = await createCharacter(charData);
+      state.characters.unshift(newChar);
+    }
+
+    $('modal-character').classList.add('hidden');
+    renderCharacterList();
+  } catch (err) {
+    console.error('Save character failed:', err);
+    alert('Failed to save character. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save';
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// MEMORY VIEWER
+// ══════════════════════════════════════════════════════════
+function openMemoryModal() {
+  const session = getCurrentSession();
+  if (!session) return;
+
+  const recent = session.messages.slice(-6);
+  $('memory-short').textContent = recent.length
+    ? recent.map(m => `[${m.role}] ${m.content}`).join('\n\n')
+    : 'No messages yet.';
+
+  $('memory-long').textContent = session.summary ?? 'No summary yet.';
+  $('modal-memory').classList.remove('hidden');
+}
+
+// ══════════════════════════════════════════════════════════
+// UTILITIES
+// ══════════════════════════════════════════════════════════
 function escapeHtml(str) {
-  return str
+  if (!str) return '';
+  return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 function autoResize() {
-  els.userInput.style.height = 'auto';
-  els.userInput.style.height = Math.min(els.userInput.scrollHeight, 140) + 'px';
+  const el = $('user-input');
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 140) + 'px';
 }
 
-// ── Event listeners ────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// EVENT LISTENERS
+// ══════════════════════════════════════════════════════════
 function initEvents() {
-  // Send on button click or Enter (Shift+Enter = newline)
-  els.btnSend.addEventListener('click', sendMessage);
-  els.userInput.addEventListener('keydown', e => {
+  // Send message
+  $('btn-send').addEventListener('click', sendMessage);
+  $('user-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
-  els.userInput.addEventListener('input', autoResize);
+  $('user-input').addEventListener('input', autoResize);
 
-  // Sidebar
-  $('btn-new-session').addEventListener('click', createSession);
-  $('btn-new-character').addEventListener('click', openCharacterModal);
+  // Sidebar buttons
+  $('btn-new-session').addEventListener('click', () => {
+    if (!state.activeCharacter) {
+      alert('Select a character first before starting a session.');
+      return;
+    }
+    createSession(state.activeCharacter);
+  });
+  $('btn-new-character').addEventListener('click', () => openCharacterModal());
+
+  // Sidebar tabs
+  $('tab-mine').addEventListener('click', () => switchSidebarTab('mine'));
+  $('tab-discover').addEventListener('click', () => switchSidebarTab('discover'));
 
   // Header
   $('btn-memory').addEventListener('click', openMemoryModal);
-  $('btn-settings').addEventListener('click', () => {
-    alert('Settings panel — coming soon.');
-  });
+
+  // User bar
+  $('btn-logout').addEventListener('click', logout);
+  $('btn-settings-open').addEventListener('click', openSettings);
 
   // Character modal
-  $('btn-save-character').addEventListener('click', saveCharacter);
+  $('btn-save-character').addEventListener('click', saveCharacterModal);
   $('btn-cancel-character').addEventListener('click', () => {
-    els.modalCharacter.classList.add('hidden');
+    $('modal-character').classList.add('hidden');
   });
 
   // Memory modal
   $('btn-close-memory').addEventListener('click', () => {
-    els.modalMemory.classList.add('hidden');
+    $('modal-memory').classList.add('hidden');
+  });
+
+  // Settings modal
+  $('btn-cancel-settings').addEventListener('click', () => {
+    $('modal-settings').classList.add('hidden');
+  });
+  $('btn-save-settings').addEventListener('click', saveSettings);
+
+  // Settings tabs
+  document.querySelectorAll('.settings-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchSettingsTab(tab.dataset.stab));
+  });
+
+  // Avatar color swatches
+  document.querySelectorAll('.color-swatch').forEach(swatch => {
+    swatch.addEventListener('click', () => {
+      document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
+      swatch.classList.add('selected');
+    });
   });
 
   // Close modals on backdrop click
-  [els.modalCharacter, els.modalMemory].forEach(modal => {
+  [$('modal-character'), $('modal-memory'), $('modal-settings')].forEach(modal => {
     modal.addEventListener('click', e => {
       if (e.target === modal) modal.classList.add('hidden');
     });
   });
 }
 
-// ── Boot ───────────────────────────────────────────────────
-function init() {
-  load();
-  renderCharacter();
+function switchSidebarTab(tab) {
+  state.activeTab = tab;
+  $('tab-mine').classList.toggle('active', tab === 'mine');
+  $('tab-discover').classList.toggle('active', tab === 'discover');
+  $('section-mine').classList.toggle('hidden', tab !== 'mine');
+  $('section-discover').classList.toggle('hidden', tab !== 'discover');
+}
+
+// ══════════════════════════════════════════════════════════
+// BOOT
+// ══════════════════════════════════════════════════════════
+async function init() {
+  await initSupabase();
+  await checkAuth();          // redirect to /auth.html if not logged in
+  await loadProfile();
+  await loadMyCharacters();
+  await loadCommunity();
+  loadSessions();
+  renderUserBar();
+  renderCharacterList();
+  renderCommunity();
   renderSessions();
+  renderActiveCharacter();
 
   if (state.activeSession) {
     activateSession(state.activeSession);

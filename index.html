@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>NO-SIGNAL — AI Roleplay</title>
   <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
   <div id="app">
@@ -16,16 +17,32 @@
         <span class="logo-text">NO-SIGNAL</span>
       </div>
 
-      <div id="character-panel">
-        <h3>Character</h3>
-        <div id="character-card">
-          <div id="character-avatar">?</div>
-          <div id="character-info">
-            <span id="character-name">No character</span>
-            <span id="character-status">Select or create one</span>
+      <!-- Sidebar tabs: My chars / Discover -->
+      <div class="sidebar-tabs">
+        <button class="sidebar-tab active" id="tab-mine">My chars</button>
+        <button class="sidebar-tab" id="tab-discover">Discover</button>
+      </div>
+
+      <!-- My characters section -->
+      <div id="section-mine">
+        <div id="character-panel">
+          <h3>Active Character</h3>
+          <div id="character-card">
+            <div id="character-avatar">?</div>
+            <div id="character-info">
+              <span id="character-name">No character</span>
+              <span id="character-status">Select or create one</span>
+            </div>
           </div>
+          <div id="my-chars-list"></div>
+          <button id="btn-new-character" class="btn-secondary">+ New character</button>
         </div>
-        <button id="btn-new-character" class="btn-secondary">+ New character</button>
+      </div>
+
+      <!-- Community / Discover section -->
+      <div id="section-discover" class="hidden">
+        <h3>Community Characters</h3>
+        <div id="community-list"></div>
       </div>
 
       <div id="session-panel">
@@ -35,6 +52,17 @@
         </ul>
         <button id="btn-new-session" class="btn-secondary">+ New session</button>
       </div>
+
+      <!-- User bar at the bottom of sidebar -->
+      <div id="user-bar">
+        <div id="user-avatar-small"></div>
+        <div id="user-info">
+          <span id="user-username">...</span>
+          <span id="user-email-small"></span>
+        </div>
+        <button id="btn-settings-open" class="btn-icon" title="Settings">⚙</button>
+        <button id="btn-logout" class="btn-icon" title="Sign out">⏻</button>
+      </div>
     </aside>
 
     <!-- Main chat area -->
@@ -43,7 +71,6 @@
         <span id="chat-title">Select a session</span>
         <div id="header-actions">
           <button id="btn-memory" class="btn-icon" title="View memory">🧠</button>
-          <button id="btn-settings" class="btn-icon" title="Settings">⚙</button>
         </div>
       </header>
 
@@ -70,10 +97,11 @@
       </div>
     </main>
 
-    <!-- Modal: New character -->
+    <!-- Modal: New / Edit character -->
     <div id="modal-character" class="modal hidden">
       <div class="modal-box">
-        <h2>Create a character</h2>
+        <h2 id="modal-character-title">Create a character</h2>
+        <input type="hidden" id="char-edit-id" value="" />
         <label>Name
           <input type="text" id="char-name" placeholder="Aiko" />
         </label>
@@ -85,6 +113,10 @@
         </label>
         <label>Lore / Background
           <textarea id="char-lore" placeholder="Cyberpunk hacker from Neo-Tokyo..."></textarea>
+        </label>
+        <label class="label-checkbox">
+          <input type="checkbox" id="char-is-public" />
+          Make public (visible in community)
         </label>
         <div class="modal-actions">
           <button id="btn-cancel-character" class="btn-secondary">Cancel</button>
@@ -107,6 +139,50 @@
         </section>
         <div class="modal-actions">
           <button id="btn-close-memory" class="btn-secondary">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Settings -->
+    <div id="modal-settings" class="modal hidden">
+      <div class="modal-box">
+        <h2>Settings</h2>
+        <div class="settings-tabs">
+          <button class="settings-tab active" data-stab="profile">Profile</button>
+          <button class="settings-tab" data-stab="persona">My Persona</button>
+        </div>
+
+        <!-- Profile tab -->
+        <div class="settings-section" id="stab-profile">
+          <label>Username
+            <input type="text" id="settings-username" placeholder="YourName" />
+          </label>
+          <label>Bio
+            <textarea id="settings-bio" placeholder="A short description of yourself..."></textarea>
+          </label>
+          <label>Avatar Color</label>
+          <div id="avatar-color-picker">
+            <button class="color-swatch" data-color="#7c6af7" style="background:#7c6af7;" title="Purple"></button>
+            <button class="color-swatch" data-color="#e05a5a" style="background:#e05a5a;" title="Red"></button>
+            <button class="color-swatch" data-color="#5ab4e0" style="background:#5ab4e0;" title="Blue"></button>
+            <button class="color-swatch" data-color="#5ae07a" style="background:#5ae07a;" title="Green"></button>
+            <button class="color-swatch" data-color="#e0a85a" style="background:#e0a85a;" title="Orange"></button>
+          </div>
+        </div>
+
+        <!-- Persona tab -->
+        <div class="settings-section hidden" id="stab-persona">
+          <label>Persona Name
+            <input type="text" id="settings-persona-name" placeholder="e.g. Alex, Detective Morgan..." />
+          </label>
+          <label>Persona Description
+            <textarea id="settings-persona-desc" placeholder="Describe your character or role in the RP context. The AI will use this to understand who it's talking to."></textarea>
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button id="btn-cancel-settings" class="btn-secondary">Cancel</button>
+          <button id="btn-save-settings" class="btn-primary">Save</button>
         </div>
       </div>
     </div>
