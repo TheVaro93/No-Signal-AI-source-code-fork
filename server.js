@@ -67,9 +67,9 @@ function buildSystemPrompt(character, summary, userPersona) {
   return prompt;
 }
 
-// ── POST /chat ──────────────────────────────────────────────
+// ── POST /chat (SSE streaming) ──────────────────────────────
 app.post('/chat', requireAuth, async (req, res) => {
-  const { character, messages, summary, userPersona } = req.body;
+  const { character, messages, summary: existingSummary, userPersona } = req.body;
 
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages is required.' });
@@ -80,8 +80,52 @@ app.post('/chat', requireAuth, async (req, res) => {
     return res.status(500).json({ error: 'GROQ_API_KEY is not set on the server.' });
   }
 
-  // Keep last 20 messages to stay within token limits
-  const recentMessages = messages.slice(-20).map(m => ({
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  let currentSummary = existingSummary ?? null;
+  let newSummary = null;
+
+  // Feature 3: summarize older messages when history is long
+  if (messages.length > 20) {
+    const oldMessages = messages.slice(0, messages.length - 10);
+    const formattedOld = oldMessages.map(m => `${m.role}: ${m.content}`).join('\n');
+    const summaryPayload = {
+      model: process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'user',
+          content: `Summarize the following roleplay conversation in 3-5 sentences, keeping key events and character dynamics:\n\n${formattedOld}`,
+        },
+      ],
+      temperature: 0.5,
+      max_tokens: 200,
+    };
+
+    try {
+      const summaryRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(summaryPayload),
+      });
+
+      if (summaryRes.ok) {
+        const summaryData = await summaryRes.json();
+        newSummary = summaryData.choices?.[0]?.message?.content ?? null;
+        if (newSummary) currentSummary = newSummary;
+      }
+    } catch (err) {
+      console.error('Summarization error:', err);
+    }
+  }
+
+  // Use last 10 messages for the streaming request
+  const recentMessages = messages.slice(-10).map(m => ({
     role:    m.role === 'user' ? 'user' : 'assistant',
     content: m.content,
   }));
@@ -89,31 +133,67 @@ app.post('/chat', requireAuth, async (req, res) => {
   const payload = {
     model: process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
     messages: [
-      { role: 'system', content: buildSystemPrompt(character, summary, userPersona) },
+      { role: 'system', content: buildSystemPrompt(character, currentSummary, userPersona) },
       ...recentMessages,
     ],
     temperature: 0.85,
     max_tokens:  512,
+    stream: true,
   };
 
-  const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method:  'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  let groqRes;
+  try {
+    groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.error('Groq fetch error:', err);
+    res.write(`data: [DONE]\n\n`);
+    res.end();
+    return;
+  }
 
   if (!groqRes.ok) {
     const err = await groqRes.text();
     console.error('Groq error:', err);
-    return res.status(502).json({ error: 'Upstream AI error.', detail: err });
+    res.write(`data: [DONE]\n\n`);
+    res.end();
+    return;
   }
 
-  const data  = await groqRes.json();
-  const reply = data.choices?.[0]?.message?.content ?? '';
-  res.json({ reply });
+  // Stream SSE chunks from Groq directly to client
+  const reader = groqRes.body.getReader();
+  const decoder = new TextDecoder();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      // Pass through lines as-is
+      const lines = chunk.split('\n');
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          res.write(line + '\n\n');
+          if (line === 'data: [DONE]') break;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Stream read error:', err);
+  }
+
+  // After [DONE], send summary event if a new summary was generated
+  if (newSummary) {
+    res.write(`event: summary\ndata: ${JSON.stringify({ summary: newSummary })}\n\n`);
+  }
+
+  res.end();
 });
 
 // ── Health check ────────────────────────────────────────────

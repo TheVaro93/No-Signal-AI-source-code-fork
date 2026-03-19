@@ -10,6 +10,9 @@
 <body>
   <div id="app">
 
+    <!-- Mobile sidebar overlay (Feature 2) -->
+    <div id="sidebar-overlay"></div>
+
     <!-- Sidebar -->
     <aside id="sidebar">
       <div id="logo">
@@ -42,6 +45,11 @@
       <!-- Community / Discover section -->
       <div id="section-discover" class="hidden">
         <h3>Community Characters</h3>
+        <!-- Feature 5: search and tag filters -->
+        <div id="discover-search">
+          <input type="text" id="search-input" placeholder="Search characters..." />
+          <div id="tag-filters"></div>
+        </div>
         <div id="community-list"></div>
       </div>
 
@@ -68,6 +76,8 @@
     <!-- Main chat area -->
     <main id="chat-area">
       <header id="chat-header">
+        <!-- Feature 2: hamburger menu button (hidden on desktop) -->
+        <button id="btn-menu" class="btn-icon" title="Menu">☰</button>
         <span id="chat-title">Select a session</span>
         <div id="header-actions">
           <button id="btn-memory" class="btn-icon" title="View memory">🧠</button>
@@ -117,6 +127,10 @@
         <label class="label-checkbox">
           <input type="checkbox" id="char-is-public" />
           Make public (visible in community)
+        </label>
+        <!-- Feature 5: tags field -->
+        <label>Tags <span style="color:var(--text-muted);font-weight:400">(comma separated)</span>
+          <input type="text" id="char-tags" placeholder="fantasy, romance, sci-fi..." />
         </label>
         <div class="modal-actions">
           <button id="btn-cancel-character" class="btn-secondary">Cancel</button>

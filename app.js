@@ -17,6 +17,9 @@ const state = {
   activeCharacter: null, // the selected character object
   activeTab: 'mine',     // 'mine' | 'discover'
   isWaiting: false,
+  allTags: [],           // all unique tags from community characters
+  searchQuery: '',       // current community search query
+  activeTag: null,       // currently filtered tag
 };
 
 // ══════════════════════════════════════════════════════════
@@ -199,6 +202,19 @@ async function loadCommunity() {
     return;
   }
   state.community = data ?? [];
+
+  // Extract unique tags from all public characters
+  const tagCounts = {};
+  state.community.forEach(char => {
+    const tags = Array.isArray(char.tags) ? char.tags : [];
+    tags.forEach(tag => {
+      if (tag) tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
+    });
+  });
+  // Sort by frequency descending
+  state.allTags = Object.entries(tagCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([tag]) => tag);
 }
 
 async function incrementInteractions(id) {
@@ -292,8 +308,6 @@ async function sendMessage() {
     const token = authSession?.access_token;
     const reply = await callAI(session, token);
     session.messages.push({ role: 'assistant', content: reply });
-    removeTypingIndicator();
-    appendMessage('assistant', reply);
   } catch (err) {
     removeTypingIndicator();
     appendMessage('assistant', `Error: ${err.message}`);
@@ -330,8 +344,100 @@ async function callAI(session, token) {
     throw new Error(errData.error ?? `Server error ${res.status}`);
   }
 
-  const data = await res.json();
-  return data.reply;
+  // Streaming: remove typing indicator, create empty assistant bubble
+  removeTypingIndicator();
+  const msgDiv = appendStreamMessage();
+  const bubble = msgDiv.querySelector('.message-bubble');
+  const messagesEl = $('messages');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let fullContent = '';
+  let pendingEventLine = null;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          pendingEventLine = null;
+          continue;
+        }
+
+        // Check for summary event
+        if (trimmed.startsWith('event: summary')) {
+          pendingEventLine = 'summary';
+          continue;
+        }
+
+        if (trimmed.startsWith('data: ')) {
+          const dataStr = trimmed.slice(6);
+
+          // Handle summary data
+          if (pendingEventLine === 'summary') {
+            pendingEventLine = null;
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (parsed.summary) {
+                session.summary = parsed.summary;
+                // Trim messages to last 10
+                session.messages = session.messages.slice(-10);
+              }
+            } catch (e) {
+              console.error('Failed to parse summary event:', e);
+            }
+            continue;
+          }
+
+          pendingEventLine = null;
+
+          if (dataStr === '[DONE]') break;
+
+          try {
+            const parsed = JSON.parse(dataStr);
+            const delta = parsed.choices?.[0]?.delta?.content;
+            if (delta) {
+              fullContent += delta;
+              bubble.textContent = fullContent;
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+          } catch (e) {
+            // Skip malformed JSON chunks
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Stream read error:', err);
+  }
+
+  return fullContent;
+}
+
+// Creates an empty assistant message div for streaming into
+function appendStreamMessage() {
+  const messagesEl = $('messages');
+
+  const empty = messagesEl.querySelector('#empty-state');
+  if (empty) empty.remove();
+
+  const senderLabel = state.activeCharacter?.name ?? 'AI';
+
+  const div = document.createElement('div');
+  div.className = 'message assistant';
+  div.innerHTML = `
+    <span class="message-sender">${escapeHtml(senderLabel)}</span>
+    <div class="message-bubble"></div>
+  `;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
 }
 
 // ══════════════════════════════════════════════════════════
@@ -474,19 +580,56 @@ function renderCharacterList() {
   });
 }
 
+// ── Feature 5: filter community by search + tag ────────────
+function filterCommunity() {
+  let list = state.community;
+
+  if (state.searchQuery) {
+    const q = state.searchQuery.toLowerCase();
+    list = list.filter(c => c.name.toLowerCase().includes(q));
+  }
+
+  if (state.activeTag) {
+    list = list.filter(c => Array.isArray(c.tags) && c.tags.includes(state.activeTag));
+  }
+
+  return list;
+}
+
 function renderCommunity() {
   const container = $('community-list');
   container.innerHTML = '';
 
-  if (state.community.length === 0) {
+  // Render tag filter chips (top 10 most common tags)
+  const tagFilters = $('tag-filters');
+  tagFilters.innerHTML = '';
+  const topTags = state.allTags.slice(0, 10);
+  topTags.forEach(tag => {
+    const chip = document.createElement('button');
+    chip.className = 'tag-chip' + (state.activeTag === tag ? ' active' : '');
+    chip.dataset.tag = tag;
+    chip.textContent = tag;
+    tagFilters.appendChild(chip);
+  });
+
+  const filtered = filterCommunity();
+
+  if (filtered.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'list-empty';
-    empty.textContent = 'No community characters yet.';
+    empty.textContent = state.searchQuery || state.activeTag
+      ? 'No results.'
+      : 'No community characters yet.';
     container.appendChild(empty);
     return;
   }
 
-  state.community.forEach(char => {
+  filtered.forEach(char => {
+    const tags = Array.isArray(char.tags) ? char.tags.filter(Boolean) : [];
+    const tagsHtml = tags.length
+      ? `<div class="char-tags">${tags.map(t => `<span class="char-tag">${escapeHtml(t)}</span>`).join('')}</div>`
+      : '';
+
     const card = document.createElement('div');
     card.className = 'community-card' + (state.activeCharacter?.id === char.id ? ' active' : '');
     card.innerHTML = `
@@ -495,6 +638,7 @@ function renderCommunity() {
         <span class="char-card-name">${escapeHtml(char.name)}</span>
         <span class="char-card-sub">${escapeHtml(char.personality ?? '')}</span>
         <span class="char-card-creator">by ${escapeHtml(char.creator_username ?? 'Unknown')}</span>
+        ${tagsHtml}
       </div>
     `;
 
@@ -509,16 +653,66 @@ function renderCommunity() {
   });
 }
 
+// ── Feature 4: render sessions with rename/delete ──────────
 function renderSessions() {
   const list = $('session-list');
   list.innerHTML = '';
 
   state.sessions.forEach(session => {
     const li = document.createElement('li');
-    li.textContent = session.name;
-    li.dataset.id  = session.id;
+    li.dataset.id = session.id;
     if (session.id === state.activeSession) li.classList.add('active');
-    li.addEventListener('click', () => activateSession(session.id));
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'session-name';
+    nameSpan.textContent = session.name;
+    nameSpan.title = session.name;
+    nameSpan.addEventListener('click', () => activateSession(session.id));
+
+    const actions = document.createElement('div');
+    actions.className = 'session-actions';
+
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'btn-icon';
+    renameBtn.title = 'Rename';
+    renameBtn.textContent = '✏';
+    renameBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const newName = prompt('Rename session:', session.name);
+      if (newName && newName.trim()) {
+        session.name = newName.trim();
+        if (state.activeSession === session.id) {
+          $('chat-title').textContent = session.name;
+        }
+        saveSessions();
+        renderSessions();
+      }
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn-icon';
+    deleteBtn.title = 'Delete';
+    deleteBtn.textContent = '✕';
+    deleteBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      if (!confirm(`Delete session "${session.name}"?`)) return;
+      const wasActive = state.activeSession === session.id;
+      state.sessions = state.sessions.filter(s => s.id !== session.id);
+      if (wasActive) {
+        state.activeSession = null;
+        $('chat-title').textContent = 'Select a session';
+        renderMessages();
+        setInputEnabled(false);
+      }
+      saveSessions();
+      renderSessions();
+    });
+
+    actions.appendChild(renameBtn);
+    actions.appendChild(deleteBtn);
+
+    li.appendChild(nameSpan);
+    li.appendChild(actions);
     list.appendChild(li);
   });
 }
@@ -603,6 +797,7 @@ function setInputEnabled(enabled) {
 // ══════════════════════════════════════════════════════════
 // CHARACTER MODAL
 // ══════════════════════════════════════════════════════════
+// Note: run in Supabase SQL: ALTER TABLE public.characters ADD COLUMN IF NOT EXISTS tags text[] default '{}';
 function openCharacterModal(existingChar = null) {
   $('modal-character-title').textContent = existingChar ? 'Edit character' : 'Create a character';
   $('char-edit-id').value      = existingChar?.id ?? '';
@@ -611,6 +806,7 @@ function openCharacterModal(existingChar = null) {
   $('char-tone').value         = existingChar?.tone         ?? '';
   $('char-lore').value         = existingChar?.lore         ?? '';
   $('char-is-public').checked  = existingChar?.is_public    ?? false;
+  $('char-tags').value         = (existingChar?.tags ?? []).join(', ');
 
   $('modal-character').classList.remove('hidden');
   $('char-name').focus();
@@ -620,12 +816,20 @@ async function saveCharacterModal() {
   const name = $('char-name').value.trim();
   if (!name) { $('char-name').focus(); return; }
 
+  // Collect tags: split by comma, trim, filter empty
+  const tagsRaw = $('char-tags').value;
+  const tags = tagsRaw
+    .split(',')
+    .map(t => t.trim())
+    .filter(t => t.length > 0);
+
   const charData = {
     name,
     personality: $('char-personality').value.trim(),
     tone:        $('char-tone').value.trim(),
     lore:        $('char-lore').value.trim(),
     is_public:   $('char-is-public').checked,
+    tags,
   };
 
   const editId = $('char-edit-id').value;
@@ -759,6 +963,31 @@ function initEvents() {
     modal.addEventListener('click', e => {
       if (e.target === modal) modal.classList.add('hidden');
     });
+  });
+
+  // Feature 2: Mobile sidebar toggle
+  $('btn-menu').addEventListener('click', () => {
+    $('sidebar').classList.toggle('open');
+    $('sidebar-overlay').classList.toggle('visible');
+  });
+  $('sidebar-overlay').addEventListener('click', () => {
+    $('sidebar').classList.remove('open');
+    $('sidebar-overlay').classList.remove('visible');
+  });
+
+  // Feature 5: Community search input
+  $('search-input').addEventListener('input', e => {
+    state.searchQuery = e.target.value.trim();
+    renderCommunity();
+  });
+
+  // Feature 5: Tag filter chip clicks (event delegation)
+  $('tag-filters').addEventListener('click', e => {
+    const chip = e.target.closest('.tag-chip');
+    if (!chip) return;
+    const tag = chip.dataset.tag;
+    state.activeTag = state.activeTag === tag ? null : tag;
+    renderCommunity();
   });
 }
 
