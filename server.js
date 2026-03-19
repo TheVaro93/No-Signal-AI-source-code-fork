@@ -17,6 +17,26 @@ const MODEL_MAP = {
 };
 const DEFAULT_MODEL = 'aurora-70';
 
+// Badge configuration per dev account (display only, not secret)
+const DEV_BADGE_CONFIG = {
+  'yugoslevent@gmail.com': ['OWNER', 'DEV', 'ADMIN', 'CODEUR'],
+  'yugo2028@gmail.com':    ['DEV'],
+  'yugo063@gmail.com':     ['DEV'],
+};
+
+// Supabase SQL:
+// CREATE TABLE public.announcements (
+//   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+//   author_email text NOT NULL,
+//   author_badges text[] DEFAULT '{}',
+//   content text NOT NULL,
+//   created_at timestamptz DEFAULT now()
+// );
+// ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
+// CREATE POLICY "Anyone can read announcements" ON public.announcements FOR SELECT USING (true);
+// CREATE POLICY "Authenticated users insert" ON public.announcements FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+// ALTER TABLE public.characters ADD COLUMN IF NOT EXISTS creator_email text default '';
+
 // ── Supabase admin client ───────────────────────────────────
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL,
@@ -33,7 +53,8 @@ app.get('/api/config', (_req, res) => {
   res.json({
     supabaseUrl:     process.env.SUPABASE_URL,
     supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
-    devEmails,  // sent to frontend (not sensitive — just used for UI badge)
+    devEmails,
+    devBadgeConfig:  DEV_BADGE_CONFIG,
   });
 });
 
@@ -242,6 +263,42 @@ app.get('/api/dev/stats', requireAuth, async (req, res) => {
     supabaseAdmin.from('characters').select('*', { count: 'exact', head: true }),
   ]);
   res.json({ userCount, charCount, devEmails: devEmails.length, maxDevAccounts: 3 });
+});
+
+// ── GET /api/announcements — public ─────────────────────────
+app.get('/api/announcements', async (_req, res) => {
+  const { data, error } = await supabaseAdmin
+    .from('announcements')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data ?? []);
+});
+
+// ── POST /api/announcements — dev only ──────────────────────
+app.post('/api/announcements', requireAuth, async (req, res) => {
+  const devEmails = (process.env.DEV_EMAILS ?? '').split(',').map(e => e.trim()).filter(Boolean);
+  if (!devEmails.includes(req.user.email)) {
+    return res.status(403).json({ error: 'Dev account required.' });
+  }
+  const { content } = req.body;
+  if (!content?.trim()) return res.status(400).json({ error: 'Content required.' });
+
+  const badges = DEV_BADGE_CONFIG[req.user.email] ?? ['DEV'];
+
+  const { data, error } = await supabaseAdmin
+    .from('announcements')
+    .insert({
+      author_email:  req.user.email,
+      author_badges: badges,
+      content: content.trim(),
+    })
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
 // ── Health check ────────────────────────────────────────────

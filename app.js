@@ -54,6 +54,8 @@ const state = {
   modelKey: localStorage.getItem('nosignal_model') ?? 'aurora-70',
   isDevAccount: false,
   devEmails: [],
+  devBadgeConfig: {},
+  announcements: [],
 };
 
 // ══════════════════════════════════════════════════════════
@@ -66,10 +68,11 @@ const $ = id => document.getElementById(id);
 // ══════════════════════════════════════════════════════════
 async function initSupabase() {
   const res = await fetch('/api/config');
-  const { supabaseUrl, supabaseAnonKey, devEmails } = await res.json();
+  const { supabaseUrl, supabaseAnonKey, devEmails, devBadgeConfig } = await res.json();
   sb = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
   window.sb = sb;
   state.devEmails = devEmails ?? [];
+  state.devBadgeConfig = devBadgeConfig ?? {};
 }
 
 // ══════════════════════════════════════════════════════════
@@ -166,6 +169,7 @@ async function createCharacter(data) {
       ...data,
       creator_id: state.user.id,
       creator_username: state.profile?.username ?? '',
+      creator_email: state.user.email,
     })
     .select()
     .single();
@@ -792,6 +796,7 @@ function switchNav(section) {
     $('left-panel').classList.add('mobile-open');
     $('sidebar-overlay').classList.add('visible');
   }
+  if (section === 'announcements') loadAnnouncements().then(renderAnnouncements);
 }
 
 // ══════════════════════════════════════════════════════════
@@ -820,12 +825,23 @@ function renderUserBar() {
   const profileEmail = $('profile-email');
   if (profileEmail) profileEmail.textContent = state.user?.email ?? '';
 
-  // Dev badge
+  // Dev badges (multi-badge)
+  const badgesEl = $('profile-badges');
+  if (badgesEl) {
+    const badges = getDevBadges(state.user?.email);
+    badgesEl.innerHTML = renderBadges(badges);
+    badgesEl.style.display = badges.length > 0 ? 'flex' : 'none';
+  }
+
   if (state.isDevAccount) {
-    $('dev-badge').classList.remove('hidden');
     $('btn-dev-panel').classList.remove('hidden');
-    // Also highlight the nav avatar
-    if (navAvatar) navAvatar.style.boxShadow = '0 0 0 2px #7c6af7';
+    // Highlight nav avatar with owner gold or dev purple
+    if (navAvatar) {
+      const isOwner = getDevBadges(state.user?.email).includes('OWNER');
+      navAvatar.style.boxShadow = isOwner
+        ? '0 0 0 2px #f7c948'
+        : '0 0 0 2px #7c6af7';
+    }
   }
 }
 
@@ -952,12 +968,13 @@ function renderCommunity() {
     const avatarContent = char.avatar_emoji ? char.avatar_emoji : char.name[0].toUpperCase();
     const card = document.createElement('div');
     card.className = 'community-card' + (state.activeCharacter?.id === char.id ? ' active' : '');
+    const creatorBadgesHtml = renderBadges(getDevBadges(char.creator_email ?? ''));
     card.innerHTML = `
       <div class="char-card-avatar" style="background:#5ab4e0">${escapeHtml(avatarContent)}</div>
       <div class="char-card-body">
         <span class="char-card-name">${escapeHtml(char.name)}</span>
         <span class="char-card-sub">${escapeHtml(char.personality ?? '')}</span>
-        <span class="char-card-creator">by ${escapeHtml(char.creator_username ?? 'Unknown')}</span>
+        <span class="char-card-creator">by ${escapeHtml(char.creator_username ?? 'Unknown')}${creatorBadgesHtml ? ' ' + creatorBadgesHtml : ''}</span>
         ${tagsHtml}
       </div>
     `;
@@ -1078,6 +1095,100 @@ function renderActiveCharacter() {
     $('character-name').textContent   = 'Aucun personnage';
     $('character-status').textContent = 'Sélectionnez-en un';
     $('character-avatar').textContent = '?';
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// ANNOUNCEMENTS
+// ══════════════════════════════════════════════════════════
+async function loadAnnouncements() {
+  try {
+    const res = await fetch('/api/announcements');
+    state.announcements = await res.json();
+  } catch (e) {
+    console.error('Failed to load announcements:', e);
+    state.announcements = [];
+  }
+}
+
+function renderAnnouncements() {
+  const list = $('announcements-list');
+  if (!list) return;
+
+  // Show compose for dev users
+  if (state.isDevAccount) {
+    $('announce-compose').classList.remove('hidden');
+    $('announcements-badge').textContent = '';
+  }
+
+  list.innerHTML = '';
+
+  if (state.announcements.length === 0) {
+    list.innerHTML = '<p class="list-empty">Aucune annonce pour l\'instant.</p>';
+    return;
+  }
+
+  state.announcements.forEach(ann => {
+    const card = document.createElement('div');
+    card.className = 'announce-card';
+
+    const badges = ann.author_badges ?? ['DEV'];
+    const date = new Date(ann.created_at).toLocaleDateString('fr-FR', {
+      day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    });
+    const authorName = ann.author_email.split('@')[0];
+    const isOwner = badges.includes('OWNER');
+    const avatarLetter = authorName[0].toUpperCase();
+
+    card.innerHTML = `
+      <div class="announce-header">
+        <div class="announce-avatar ${isOwner ? 'announce-avatar-owner' : ''}">${avatarLetter}</div>
+        <div class="announce-meta">
+          <div class="announce-author-row">
+            <span class="announce-author">${escapeHtml(authorName)}</span>
+            <div class="announce-badges">${renderBadges(badges)}</div>
+          </div>
+          <span class="announce-date">${date}</span>
+        </div>
+      </div>
+      <div class="announce-content">${escapeHtml(ann.content)}</div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+async function postAnnouncement() {
+  const input = $('announce-input');
+  const content = input.value.trim();
+  if (!content) return;
+
+  const btn = $('btn-post-announce');
+  btn.disabled = true;
+  btn.textContent = 'Publication...';
+
+  try {
+    const { data: { session: authSession } } = await sb.auth.getSession();
+    const res = await fetch('/api/announcements', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authSession?.access_token}`,
+      },
+      body: JSON.stringify({ content }),
+    });
+    if (!res.ok) throw new Error('Failed to post');
+    const ann = await res.json();
+    state.announcements.unshift(ann);
+    input.value = '';
+    input.style.height = 'auto';
+    renderAnnouncements();
+  } catch (err) {
+    console.error('Post announcement failed:', err);
+    alert('Erreur lors de la publication.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Publier';
   }
 }
 
@@ -1247,6 +1358,18 @@ async function openDevPanel() {
 // ══════════════════════════════════════════════════════════
 // UTILITIES
 // ══════════════════════════════════════════════════════════
+function getDevBadges(email) {
+  if (!email) return [];
+  const devEmails = state.devEmails ?? [];
+  if (!devEmails.includes(email)) return [];
+  return state.devBadgeConfig[email] ?? ['DEV'];
+}
+
+function renderBadges(badges) {
+  if (!badges || badges.length === 0) return '';
+  return badges.map(b => `<span class="badge badge-${b.toLowerCase()}">${b}</span>`).join('');
+}
+
 function escapeHtml(str) {
   if (!str) return '';
   return String(str)
@@ -1379,6 +1502,17 @@ function initEvents() {
     state.activeTag = state.activeTag === tag ? null : tag;
     renderCommunity();
   });
+
+  // Announcements compose
+  $('btn-post-announce').addEventListener('click', postAnnouncement);
+  $('announce-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); postAnnouncement(); }
+  });
+  $('announce-input').addEventListener('input', () => {
+    const el = $('announce-input');
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  });
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1390,10 +1524,12 @@ async function init() {
   await loadProfile();
   await loadMyCharacters();
   await loadCommunity();
+  await loadAnnouncements();
   loadSessions();
   renderUserBar();
   renderCharacterList();
   renderCommunity();
+  renderAnnouncements();
   renderSessions();
   renderActiveCharacter();
   renderModelBadge();
