@@ -1,3 +1,8 @@
+// ── Config ─────────────────────────────────────────────────
+// In development: backend runs on localhost:3000
+// In production: set this to your deployed backend URL (Railway, Render, etc.)
+const BACKEND_URL = 'http://localhost:3000';
+
 // ── State ──────────────────────────────────────────────────
 const state = {
   character: null,   // { name, personality, tone, lore }
@@ -248,7 +253,7 @@ async function callAI(session) {
   };
 
   try {
-    const res = await fetch('/chat', {
+    const res = await fetch(`${BACKEND_URL}/chat`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(payload),
