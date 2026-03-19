@@ -5,6 +5,26 @@ const BACKEND_URL = '';
 let sb = null; // Supabase client
 
 // ══════════════════════════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════════════════════════
+const MODEL_DISPLAY_NAMES = {
+  'aurora-70': 'AURORA-70',
+  'prism':     'PRISM-8X',
+  'swift':     'SWIFT',
+  'stellar':   'STELLAR',
+};
+
+const TIPS = [
+  "Ajoutez un lore détaillé à votre personnage pour des réponses plus immersives.",
+  "Utilisez votre Persona (Settings) pour que l'IA sache à qui elle parle.",
+  "Partagez vos personnages avec la communauté en les rendant publics !",
+  "La mémoire long-terme se déclenche automatiquement après 20 messages.",
+  "Essayez différents modèles IA dans les paramètres pour varier les styles.",
+  "Shift+Entrée pour aller à la ligne sans envoyer le message.",
+  "Survolez un message pour l'éditer ou régénérer la réponse.",
+];
+
+// ══════════════════════════════════════════════════════════
 // STATE
 // ══════════════════════════════════════════════════════════
 const state = {
@@ -20,6 +40,7 @@ const state = {
   allTags: [],           // all unique tags from community characters
   searchQuery: '',       // current community search query
   activeTag: null,       // currently filtered tag
+  modelKey: localStorage.getItem('nosignal_model') ?? 'aurora-70',
 };
 
 // ══════════════════════════════════════════════════════════
@@ -106,6 +127,7 @@ async function saveProfile(data) {
 // ══════════════════════════════════════════════════════════
 // CHARACTERS (Supabase)
 // ══════════════════════════════════════════════════════════
+// Supabase SQL: ALTER TABLE public.characters ADD COLUMN IF NOT EXISTS avatar_emoji text default '';
 async function loadMyCharacters() {
   const { data, error } = await sb
     .from('characters')
@@ -294,7 +316,8 @@ async function sendMessage() {
 
   // Add user message
   session.messages.push({ role: 'user', content });
-  appendMessage('user', content);
+  const userMsgIndex = session.messages.length - 1;
+  appendMessage('user', content, true, userMsgIndex);
   $('user-input').value = '';
   autoResize();
 
@@ -310,7 +333,7 @@ async function sendMessage() {
     session.messages.push({ role: 'assistant', content: reply });
   } catch (err) {
     removeTypingIndicator();
-    appendMessage('assistant', `Error: ${err.message}`);
+    appendMessage('assistant', `Error: ${err.message}`, true, session.messages.length);
   }
 
   state.isWaiting = false;
@@ -328,6 +351,7 @@ async function callAI(session, token) {
       name: state.profile?.persona_name ?? '',
       desc: state.profile?.persona_desc ?? '',
     },
+    modelKey: state.modelKey,
   };
 
   const res = await fetch(`${BACKEND_URL}/chat`, {
@@ -346,7 +370,8 @@ async function callAI(session, token) {
 
   // Streaming: remove typing indicator, create empty assistant bubble
   removeTypingIndicator();
-  const msgDiv = appendStreamMessage();
+  const streamMsgIndex = session.messages.length; // will be pushed after stream
+  const msgDiv = appendStreamMessage(streamMsgIndex);
   const bubble = msgDiv.querySelector('.message-bubble');
   const messagesEl = $('messages');
 
@@ -421,23 +446,149 @@ async function callAI(session, token) {
 }
 
 // Creates an empty assistant message div for streaming into
-function appendStreamMessage() {
+function appendStreamMessage(msgIndex) {
   const messagesEl = $('messages');
 
   const empty = messagesEl.querySelector('#empty-state');
   if (empty) empty.remove();
 
-  const senderLabel = state.activeCharacter?.name ?? 'AI';
+  const avatarEmoji = state.activeCharacter?.avatar_emoji;
+  const charName = state.activeCharacter?.name ?? 'AI';
+  const senderLabel = avatarEmoji ? `${avatarEmoji} ${charName}` : charName;
 
   const div = document.createElement('div');
   div.className = 'message assistant';
+  if (msgIndex !== undefined) div.dataset.msgIndex = msgIndex;
   div.innerHTML = `
     <span class="message-sender">${escapeHtml(senderLabel)}</span>
-    <div class="message-bubble"></div>
+    <div class="message-bubble-wrapper">
+      <div class="message-bubble"></div>
+      <div class="message-actions">
+        <button class="btn-msg-edit btn-icon" title="Edit">✏</button>
+      </div>
+    </div>
   `;
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  // Enable editing once content is available (after stream)
+  enableMessageEditing(div, 'assistant', msgIndex);
+
   return div;
+}
+
+// ══════════════════════════════════════════════════════════
+// MESSAGE EDITING
+// ══════════════════════════════════════════════════════════
+function enableMessageEditing(div, _role, msgIndex) {
+  const editBtn = div.querySelector('.btn-msg-edit');
+  const regenBtn = div.querySelector('.btn-msg-regen');
+
+  if (editBtn) {
+    editBtn.addEventListener('click', () => {
+      const session = getCurrentSession();
+      if (!session) return;
+
+      const wrapper = div.querySelector('.message-bubble-wrapper');
+      const bubble = div.querySelector('.message-bubble');
+      const currentContent = session.messages[msgIndex]?.content ?? bubble.textContent ?? '';
+
+      // Replace bubble with textarea
+      const textarea = document.createElement('textarea');
+      textarea.className = 'msg-edit-textarea';
+      textarea.value = currentContent;
+
+      const actionsDiv = document.createElement('div');
+      actionsDiv.className = 'msg-edit-actions';
+
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'btn-primary';
+      saveBtn.textContent = 'Save';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'btn-secondary';
+      cancelBtn.style.width = 'auto';
+      cancelBtn.textContent = 'Cancel';
+
+      actionsDiv.appendChild(cancelBtn);
+      actionsDiv.appendChild(saveBtn);
+
+      bubble.replaceWith(textarea);
+      // Hide original message-actions while editing
+      const msgActions = wrapper.querySelector('.message-actions');
+      if (msgActions) msgActions.style.display = 'none';
+      wrapper.appendChild(actionsDiv);
+      textarea.focus();
+      textarea.select();
+
+      cancelBtn.addEventListener('click', () => {
+        const newBubble = document.createElement('div');
+        newBubble.className = 'message-bubble';
+        newBubble.textContent = currentContent;
+        textarea.replaceWith(newBubble);
+        actionsDiv.remove();
+        if (msgActions) msgActions.style.display = '';
+      });
+
+      saveBtn.addEventListener('click', () => {
+        const newContent = textarea.value.trim();
+        if (!newContent) return;
+
+        if (session.messages[msgIndex]) {
+          session.messages[msgIndex].content = newContent;
+        }
+        saveSessions();
+        renderMessages();
+      });
+    });
+  }
+
+  if (regenBtn) {
+    regenBtn.addEventListener('click', async () => {
+      const session = getCurrentSession();
+      if (!session) return;
+      if (state.isWaiting) return;
+
+      const wrapper = div.querySelector('.message-bubble-wrapper');
+      const bubble = div.querySelector('.message-bubble');
+      const currentContent = session.messages[msgIndex]?.content ?? bubble.textContent ?? '';
+
+      // Get edited content from textarea if in edit mode, otherwise use current
+      const textarea = wrapper.querySelector('.msg-edit-textarea');
+      const editedContent = textarea ? textarea.value.trim() : currentContent;
+      if (!editedContent) return;
+
+      // Update the message content and trim everything after this user message
+      if (session.messages[msgIndex]) {
+        session.messages[msgIndex].content = editedContent;
+      }
+      session.messages = session.messages.slice(0, msgIndex + 1);
+      saveSessions();
+
+      // Re-render messages up to this point
+      renderMessages();
+
+      // Trigger AI response
+      state.isWaiting = true;
+      setInputEnabled(false);
+      showTypingIndicator();
+
+      try {
+        const { data: { session: authSession } } = await sb.auth.getSession();
+        const token = authSession?.access_token;
+        const reply = await callAI(session, token);
+        session.messages.push({ role: 'assistant', content: reply });
+      } catch (err) {
+        removeTypingIndicator();
+        appendMessage('assistant', `Error: ${err.message}`, true, session.messages.length);
+      }
+
+      state.isWaiting = false;
+      setInputEnabled(true);
+      $('user-input').focus();
+      saveSessions();
+    });
+  }
 }
 
 // ══════════════════════════════════════════════════════════
@@ -456,6 +607,10 @@ function openSettings() {
     swatch.classList.toggle('selected', swatch.dataset.color === (profile.avatar_color ?? '#7c6af7'));
   });
 
+  // Set the correct model radio button
+  const modelRadio = document.querySelector(`input[name="model-select"][value="${state.modelKey}"]`);
+  if (modelRadio) modelRadio.checked = true;
+
   // Reset to profile tab
   switchSettingsTab('profile');
   $('modal-settings').classList.remove('hidden');
@@ -470,6 +625,13 @@ async function saveSettings() {
   const selectedSwatch = document.querySelector('.color-swatch.selected');
   const avatar_color = selectedSwatch?.dataset.color ?? state.profile?.avatar_color ?? '#7c6af7';
 
+  // Save model selection
+  const selectedModel = document.querySelector('input[name="model-select"]:checked')?.value;
+  if (selectedModel) {
+    state.modelKey = selectedModel;
+    localStorage.setItem('nosignal_model', selectedModel);
+  }
+
   const btn = $('btn-save-settings');
   btn.disabled = true;
   btn.textContent = 'Saving...';
@@ -478,6 +640,7 @@ async function saveSettings() {
     await saveProfile({ username, bio, avatar_color, persona_name, persona_desc });
     $('modal-settings').classList.add('hidden');
     renderUserBar();
+    renderModelBadge();
   } catch (err) {
     console.error('Save settings failed:', err);
   } finally {
@@ -493,6 +656,49 @@ function switchSettingsTab(tab) {
   document.querySelectorAll('.settings-section').forEach(s => {
     s.classList.toggle('hidden', s.id !== `stab-${tab}`);
   });
+}
+
+// ══════════════════════════════════════════════════════════
+// MODEL BADGE
+// ══════════════════════════════════════════════════════════
+function renderModelBadge() {
+  const badge = $('model-badge-header');
+  if (!badge) return;
+  const displayName = MODEL_DISPLAY_NAMES[state.modelKey] ?? state.modelKey.toUpperCase();
+  badge.id = 'model-badge-header';
+  badge.textContent = displayName;
+}
+
+// ══════════════════════════════════════════════════════════
+// WELCOME MODAL + GREETING
+// ══════════════════════════════════════════════════════════
+function showWelcomeIfNeeded() {
+  if (localStorage.getItem('nosignal_welcomed')) return;
+
+  const welcomeTitle = $('welcome-title');
+  if (welcomeTitle) {
+    welcomeTitle.textContent = `Bienvenue, ${state.profile?.username ?? 'ami'} !`;
+  }
+
+  $('modal-welcome').classList.remove('hidden');
+
+  $('btn-welcome-ok').addEventListener('click', () => {
+    localStorage.setItem('nosignal_welcomed', '1');
+    $('modal-welcome').classList.add('hidden');
+  });
+}
+
+function renderGreeting() {
+  const greetingEl = $('greeting-text');
+  if (greetingEl) {
+    greetingEl.textContent = `Bonjour, ${state.profile?.username ?? 'ami'} 👋`;
+  }
+
+  const tipEl = $('tip-text');
+  if (tipEl) {
+    const randomTip = TIPS[Math.floor(Math.random() * TIPS.length)];
+    tipEl.textContent = randomTip;
+  }
 }
 
 // ══════════════════════════════════════════════════════════
@@ -524,10 +730,11 @@ function renderCharacterList() {
   }
 
   state.characters.forEach(char => {
+    const avatarContent = char.avatar_emoji ? char.avatar_emoji : char.name[0].toUpperCase();
     const card = document.createElement('div');
     card.className = 'char-card' + (state.activeCharacter?.id === char.id ? ' active' : '');
     card.innerHTML = `
-      <div class="char-card-avatar" style="background:${state.profile?.avatar_color ?? '#7c6af7'}">${char.name[0].toUpperCase()}</div>
+      <div class="char-card-avatar" style="background:${state.profile?.avatar_color ?? '#7c6af7'}">${escapeHtml(avatarContent)}</div>
       <div class="char-card-body">
         <span class="char-card-name">${escapeHtml(char.name)}</span>
         <span class="char-card-sub">${escapeHtml(char.personality ?? '')}</span>
@@ -630,10 +837,11 @@ function renderCommunity() {
       ? `<div class="char-tags">${tags.map(t => `<span class="char-tag">${escapeHtml(t)}</span>`).join('')}</div>`
       : '';
 
+    const avatarContent = char.avatar_emoji ? char.avatar_emoji : char.name[0].toUpperCase();
     const card = document.createElement('div');
     card.className = 'community-card' + (state.activeCharacter?.id === char.id ? ' active' : '');
     card.innerHTML = `
-      <div class="char-card-avatar" style="background:#5ab4e0">${char.name[0].toUpperCase()}</div>
+      <div class="char-card-avatar" style="background:#5ab4e0">${escapeHtml(avatarContent)}</div>
       <div class="char-card-body">
         <span class="char-card-name">${escapeHtml(char.name)}</span>
         <span class="char-card-sub">${escapeHtml(char.personality ?? '')}</span>
@@ -722,16 +930,24 @@ function renderMessages() {
   const messagesEl = $('messages');
   messagesEl.innerHTML = '';
 
-  const emptyState = document.createElement('div');
-  emptyState.id = 'empty-state';
-  emptyState.innerHTML = '<p class="empty-icon">◈</p><p>Start a session to begin the roleplay.</p>';
-
   if (!session || session.messages.length === 0) {
+    const emptyState = document.createElement('div');
+    emptyState.id = 'empty-state';
+    emptyState.innerHTML = `
+      <p id="greeting-text" class="greeting"></p>
+      <p class="empty-icon">◈</p>
+      <p class="empty-subtitle">Sélectionnez un personnage et démarrez une session.</p>
+      <div id="tips-container">
+        <p class="tip-label">💡 Le saviez-vous ?</p>
+        <p id="tip-text" class="tip-text"></p>
+      </div>
+    `;
     messagesEl.appendChild(emptyState);
+    renderGreeting();
     return;
   }
 
-  session.messages.forEach(msg => appendMessage(msg.role, msg.content, false));
+  session.messages.forEach((msg, index) => appendMessage(msg.role, msg.content, false, index));
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
@@ -740,7 +956,12 @@ function renderActiveCharacter() {
   if (char) {
     $('character-name').textContent   = char.name;
     $('character-status').textContent = char.personality ?? '';
-    $('character-avatar').textContent = char.name[0].toUpperCase();
+    // Show emoji avatar if available, otherwise first letter
+    if (char.avatar_emoji) {
+      $('character-avatar').textContent = char.avatar_emoji;
+    } else {
+      $('character-avatar').textContent = char.name[0].toUpperCase();
+    }
   } else {
     $('character-name').textContent   = 'No character';
     $('character-status').textContent = 'Select or create one';
@@ -748,23 +969,37 @@ function renderActiveCharacter() {
   }
 }
 
-function appendMessage(role, content, scroll = true) {
+function appendMessage(role, content, scroll = true, msgIndex) {
   const messagesEl = $('messages');
 
   const empty = messagesEl.querySelector('#empty-state');
   if (empty) empty.remove();
 
-  const senderLabel = role === 'user'
+  const isUser = role === 'user';
+  const avatarEmoji = state.activeCharacter?.avatar_emoji;
+  const charName = state.activeCharacter?.name ?? 'AI';
+
+  const senderLabel = isUser
     ? (state.profile?.persona_name || 'You')
-    : (state.activeCharacter?.name ?? 'AI');
+    : (avatarEmoji ? `${avatarEmoji} ${charName}` : charName);
 
   const div = document.createElement('div');
   div.className = `message ${role}`;
+  if (msgIndex !== undefined) div.dataset.msgIndex = msgIndex;
+
   div.innerHTML = `
     <span class="message-sender">${escapeHtml(senderLabel)}</span>
-    <div class="message-bubble">${escapeHtml(content)}</div>
+    <div class="message-bubble-wrapper">
+      <div class="message-bubble">${escapeHtml(content)}</div>
+      <div class="message-actions">
+        <button class="btn-msg-edit btn-icon" title="Edit">✏</button>
+        ${isUser ? '<button class="btn-msg-regen btn-icon" title="Regenerate from here">↺</button>' : ''}
+      </div>
+    </div>
   `;
   messagesEl.appendChild(div);
+
+  enableMessageEditing(div, role, msgIndex);
 
   if (scroll) messagesEl.scrollTop = messagesEl.scrollHeight;
   return div;
@@ -772,11 +1007,15 @@ function appendMessage(role, content, scroll = true) {
 
 function showTypingIndicator() {
   const messagesEl = $('messages');
+  const avatarEmoji = state.activeCharacter?.avatar_emoji;
+  const charName = state.activeCharacter?.name ?? 'AI';
+  const senderLabel = avatarEmoji ? `${avatarEmoji} ${charName}` : charName;
+
   const div = document.createElement('div');
   div.className = 'message assistant typing-indicator';
   div.id = 'typing';
   div.innerHTML = `
-    <span class="message-sender">${escapeHtml(state.activeCharacter?.name ?? 'AI')}</span>
+    <span class="message-sender">${escapeHtml(senderLabel)}</span>
     <div class="message-bubble">
       <span class="dot"></span><span class="dot"></span><span class="dot"></span>
     </div>
@@ -798,10 +1037,12 @@ function setInputEnabled(enabled) {
 // CHARACTER MODAL
 // ══════════════════════════════════════════════════════════
 // Note: run in Supabase SQL: ALTER TABLE public.characters ADD COLUMN IF NOT EXISTS tags text[] default '{}';
+// Note: run in Supabase SQL: ALTER TABLE public.characters ADD COLUMN IF NOT EXISTS avatar_emoji text default '';
 function openCharacterModal(existingChar = null) {
   $('modal-character-title').textContent = existingChar ? 'Edit character' : 'Create a character';
   $('char-edit-id').value      = existingChar?.id ?? '';
   $('char-name').value         = existingChar?.name         ?? '';
+  $('char-avatar-emoji').value = existingChar?.avatar_emoji ?? '';
   $('char-personality').value  = existingChar?.personality  ?? '';
   $('char-tone').value         = existingChar?.tone         ?? '';
   $('char-lore').value         = existingChar?.lore         ?? '';
@@ -825,6 +1066,7 @@ async function saveCharacterModal() {
 
   const charData = {
     name,
+    avatar_emoji: $('char-avatar-emoji').value.trim(),
     personality: $('char-personality').value.trim(),
     tone:        $('char-tone').value.trim(),
     lore:        $('char-lore').value.trim(),
@@ -959,7 +1201,8 @@ function initEvents() {
   });
 
   // Close modals on backdrop click
-  [$('modal-character'), $('modal-memory'), $('modal-settings')].forEach(modal => {
+  [$('modal-character'), $('modal-memory'), $('modal-settings'), $('modal-welcome')].forEach(modal => {
+    if (!modal) return;
     modal.addEventListener('click', e => {
       if (e.target === modal) modal.classList.add('hidden');
     });
@@ -1014,6 +1257,9 @@ async function init() {
   renderCommunity();
   renderSessions();
   renderActiveCharacter();
+  renderModelBadge();
+  renderGreeting();
+  showWelcomeIfNeeded();
 
   if (state.activeSession) {
     activateSession(state.activeSession);

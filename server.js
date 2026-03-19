@@ -2,10 +2,20 @@ import express from 'express';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { createClient } from '@supabase/supabase-js';
+import Stripe from 'stripe';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app  = express();
 const PORT = process.env.PORT || 3000;
+
+// ── Model map (custom names, no brand names) ────────────────
+const MODEL_MAP = {
+  'aurora-70': { provider: 'groq',   id: 'llama-3.3-70b-versatile',  baseUrl: 'https://api.groq.com/openai/v1' },
+  'prism':     { provider: 'groq',   id: 'mixtral-8x7b-32768',        baseUrl: 'https://api.groq.com/openai/v1' },
+  'swift':     { provider: 'groq',   id: 'llama3-8b-8192',            baseUrl: 'https://api.groq.com/openai/v1' },
+  'stellar':   { provider: 'gemini', id: 'gemini-1.5-flash',           baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
+};
+const DEFAULT_MODEL = 'aurora-70';
 
 // ── Supabase admin client ───────────────────────────────────
 const supabaseAdmin = createClient(
@@ -69,16 +79,34 @@ function buildSystemPrompt(character, summary, userPersona) {
 
 // ── POST /chat (SSE streaming) ──────────────────────────────
 app.post('/chat', requireAuth, async (req, res) => {
-  const { character, messages, summary: existingSummary, userPersona } = req.body;
+  const { character, messages, summary: existingSummary, userPersona, modelKey } = req.body;
 
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages is required.' });
   }
 
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: 'GROQ_API_KEY is not set on the server.' });
+  // Resolve model from MODEL_MAP
+  const resolvedModelKey = (modelKey && MODEL_MAP[modelKey]) ? modelKey : DEFAULT_MODEL;
+  const model = MODEL_MAP[resolvedModelKey];
+
+  // Resolve API key and base URL based on provider
+  let apiKey;
+  if (model.provider === 'groq') {
+    apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'GROQ_API_KEY is not set on the server.' });
+    }
+  } else if (model.provider === 'gemini') {
+    apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'GEMINI_API_KEY is not set on the server.' });
+    }
+  } else {
+    return res.status(500).json({ error: 'Unknown provider.' });
   }
+
+  const baseUrl = model.baseUrl;
+  const modelId = model.id;
 
   // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
@@ -88,7 +116,7 @@ app.post('/chat', requireAuth, async (req, res) => {
   let currentSummary = existingSummary ?? null;
   let newSummary = null;
 
-  // Feature 3: summarize older messages when history is long
+  // Summarize older messages when history is long
   if (messages.length > 20) {
     const oldMessages = messages.slice(0, messages.length - 10);
     const formattedOld = oldMessages.map(m => `${m.role}: ${m.content}`).join('\n');
@@ -105,19 +133,23 @@ app.post('/chat', requireAuth, async (req, res) => {
     };
 
     try {
-      const summaryRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(summaryPayload),
-      });
+      // Always use Groq for summarization (fast and cheap)
+      const summaryApiKey = process.env.GROQ_API_KEY;
+      if (summaryApiKey) {
+        const summaryRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${summaryApiKey}`,
+          },
+          body: JSON.stringify(summaryPayload),
+        });
 
-      if (summaryRes.ok) {
-        const summaryData = await summaryRes.json();
-        newSummary = summaryData.choices?.[0]?.message?.content ?? null;
-        if (newSummary) currentSummary = newSummary;
+        if (summaryRes.ok) {
+          const summaryData = await summaryRes.json();
+          newSummary = summaryData.choices?.[0]?.message?.content ?? null;
+          if (newSummary) currentSummary = newSummary;
+        }
       }
     } catch (err) {
       console.error('Summarization error:', err);
@@ -131,7 +163,7 @@ app.post('/chat', requireAuth, async (req, res) => {
   }));
 
   const payload = {
-    model: process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
+    model: modelId,
     messages: [
       { role: 'system', content: buildSystemPrompt(character, currentSummary, userPersona) },
       ...recentMessages,
@@ -141,9 +173,9 @@ app.post('/chat', requireAuth, async (req, res) => {
     stream: true,
   };
 
-  let groqRes;
+  let aiRes;
   try {
-    groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    aiRes = await fetch(`${baseUrl}/chat/completions`, {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
@@ -152,22 +184,22 @@ app.post('/chat', requireAuth, async (req, res) => {
       body: JSON.stringify(payload),
     });
   } catch (err) {
-    console.error('Groq fetch error:', err);
+    console.error('AI fetch error:', err);
     res.write(`data: [DONE]\n\n`);
     res.end();
     return;
   }
 
-  if (!groqRes.ok) {
-    const err = await groqRes.text();
-    console.error('Groq error:', err);
+  if (!aiRes.ok) {
+    const err = await aiRes.text();
+    console.error('AI error:', err);
     res.write(`data: [DONE]\n\n`);
     res.end();
     return;
   }
 
-  // Stream SSE chunks from Groq directly to client
-  const reader = groqRes.body.getReader();
+  // Stream SSE chunks from AI directly to client
+  const reader = aiRes.body.getReader();
   const decoder = new TextDecoder();
 
   try {
@@ -198,5 +230,31 @@ app.post('/chat', requireAuth, async (req, res) => {
 
 // ── Health check ────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+// ── POST /create-checkout-session (Stripe) ──────────────────
+app.post('/create-checkout-session', async (req, res) => {
+  const stripeKey = process.env.STRIPE_SECRET_KEY;
+  if (!stripeKey) return res.status(503).json({ error: 'Payments not configured.' });
+
+  const stripe = new Stripe(stripeKey);
+  const host = req.headers.origin ?? `https://${req.headers.host}`;
+
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [{
+        price: process.env.STRIPE_PRICE_ID,
+        quantity: 1,
+      }],
+      success_url: `${host}/?subscribed=1`,
+      cancel_url:  `${host}/subscribe.html`,
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error('Stripe error:', err);
+    res.status(500).json({ error: 'Failed to create checkout session.' });
+  }
+});
 
 app.listen(PORT, () => console.log(`NO-SIGNAL backend running on port ${PORT}`));

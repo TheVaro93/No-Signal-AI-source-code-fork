@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NO-SIGNAL — Soutenir le projet</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    body { display: flex; flex-direction: column; min-height: 100vh; }
+    #sub-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 32px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    #sub-header a { color: var(--text-secondary); text-decoration: none; font-size: 13px; transition: color 0.15s; }
+    #sub-header a:hover { color: var(--text-primary); }
+    #sub-main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px 20px; gap: 32px; }
+    .sub-hero { text-align: center; max-width: 520px; display: flex; flex-direction: column; gap: 12px; }
+    .sub-hero h1 { font-size: 32px; font-weight: 800; background: linear-gradient(135deg, #fff 30%, var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .sub-hero p { color: var(--text-secondary); font-size: 15px; line-height: 1.6; }
+    .sub-cards { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; max-width: 700px; }
+    .sub-card { background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: 16px; padding: 28px; flex: 1; min-width: 260px; max-width: 320px; display: flex; flex-direction: column; gap: 14px; }
+    .sub-card h3 { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+    .sub-card ul { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    .sub-card li { font-size: 13px; color: var(--text-secondary); display: flex; align-items: flex-start; gap: 8px; }
+    .sub-card li::before { content: "✦"; color: var(--accent); flex-shrink: 0; }
+    .price-card { border-color: var(--accent); background: rgba(124,106,247,0.06); text-align: center; align-items: center; }
+    .price-display { display: flex; align-items: baseline; gap: 4px; }
+    .price-amount { font-size: 44px; font-weight: 800; color: var(--text-primary); }
+    .price-period { font-size: 16px; color: var(--text-secondary); }
+    .btn-subscribe { background: var(--accent); color: #fff; border: none; border-radius: 12px; padding: 14px 32px; font-size: 15px; font-weight: 700; cursor: pointer; transition: background 0.15s, transform 0.1s; font-family: var(--font); width: 100%; }
+    .btn-subscribe:hover { background: var(--accent-hover); transform: translateY(-1px); }
+    .sub-disclaimer { max-width: 480px; text-align: center; font-size: 12px; color: var(--text-muted); line-height: 1.7; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 20px; }
+    #sub-footer { text-align: center; padding: 20px; font-size: 12px; color: var(--text-muted); border-top: 1px solid var(--border); flex-shrink: 0; }
+  </style>
+</head>
+<body>
+  <header id="sub-header">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="logo-icon">◈</span>
+      <span class="logo-text">NO-SIGNAL</span>
+    </div>
+    <a href="/">← Retour à l'application</a>
+  </header>
+
+  <main id="sub-main">
+    <div class="sub-hero">
+      <h1>Soutenez NO-SIGNAL ❤️</h1>
+      <p>NO-SIGNAL est un projet indépendant créé et maintenu par une seule personne. Votre soutien permet de garder les serveurs en ligne et d'améliorer continuellement l'expérience.</p>
+    </div>
+
+    <div class="sub-cards">
+      <div class="sub-card">
+        <h3>Ce que votre soutien permet</h3>
+        <ul>
+          <li>Maintenir les serveurs actifs 24h/24</li>
+          <li>Accéder à des modèles IA plus puissants</li>
+          <li>Développer de nouvelles fonctionnalités</li>
+          <li>Améliorer la vitesse et la fiabilité</li>
+          <li>Garder le projet 100% open source</li>
+        </ul>
+      </div>
+
+      <div class="sub-card price-card">
+        <h3>Abonnement Soutien</h3>
+        <div class="price-display">
+          <span class="price-amount">3€</span>
+          <span class="price-period">/ mois</span>
+        </div>
+        <p style="font-size:12px;color:var(--text-secondary)">Annulable à tout moment</p>
+        <button class="btn-subscribe" id="btn-subscribe">Soutenir le projet ✦</button>
+        <p style="font-size:11px;color:var(--text-muted)">Paiement sécurisé via Stripe</p>
+      </div>
+    </div>
+
+    <div class="sub-disclaimer">
+      🌟 Cet abonnement est <strong>100% facultatif</strong> mais il soutient les créateurs et permet de louer plus de serveurs et de booster vos IAs.<br><br>
+      <strong>Merci énormément</strong> pour votre soutien, il compte vraiment.
+    </div>
+  </main>
+
+  <footer id="sub-footer">
+    Fait avec amour par un seul dev, Yugos06 · NO-SIGNAL © 2025
+  </footer>
+
+  <script>
+    document.getElementById('btn-subscribe').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-subscribe');
+      btn.disabled = true;
+      btn.textContent = 'Redirection...';
+      try {
+        const res = await fetch('/create-checkout-session', { method: 'POST' });
+        const { url } = await res.json();
+        if (url) window.location.href = url;
+        else throw new Error('No URL');
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Soutenir le projet ✦';
+        alert('Paiement temporairement indisponible. Réessayez plus tard.');
+      }
+    });
+  </script>
+</body>
+</html>
