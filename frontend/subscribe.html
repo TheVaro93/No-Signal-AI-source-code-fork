@@ -79,13 +79,15 @@
     Fait avec amour par un seul dev, Yugos06 · NO-SIGNAL © 2025
   </footer>
 
+  <script src="config.js"></script>
   <script>
+    const BACKEND_URL = (window.NO_SIGNAL_BACKEND_URL || '').replace(/\/$/, '');
     document.getElementById('btn-subscribe').addEventListener('click', async () => {
       const btn = document.getElementById('btn-subscribe');
       btn.disabled = true;
       btn.textContent = 'Redirection...';
       try {
-        const res = await fetch('/create-checkout-session', { method: 'POST' });
+        const res = await fetch(`${BACKEND_URL}/create-checkout-session`, { method: 'POST' });
         const { url } = await res.json();
         if (url) window.location.href = url;
         else throw new Error('No URL');

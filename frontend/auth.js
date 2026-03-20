@@ -1,6 +1,8 @@
+const BACKEND_URL = (window.NO_SIGNAL_BACKEND_URL || '').replace(/\/$/, '');
+
 // ── Supabase Init ───────────────────────────────────────────
 async function initSupabase() {
-  const res = await fetch('/api/config');
+  const res = await fetch(`${BACKEND_URL}/api/config`);
   const { supabaseUrl, supabaseAnonKey } = await res.json();
   window.sb = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
 }

@@ -99,16 +99,25 @@ git clone https://github.com/Yugos06/NO-SIGNAL-
 cd NO-SIGNAL-
 ```
 
-### Frontend
+### Frontend (served by Backend on Railway)
 
-Open `index.html` or deploy via GitHub Pages
+The backend now serves `frontend/` directly.  
+If you ever want a separate frontend, set the backend URL in `frontend/config.js`.
 
-### Backend
+### Backend (Railway)
 
+Run locally:
 ```bash
+cd backend
 npm install
 npm run dev
 ```
+
+Railway (single service) recommended settings:
+1. Root directory: repo root
+2. Install command: `npm --prefix backend install`
+3. Start command: `node backend/server.js`
+4. Set env vars from `backend/.env.example`
 
 ---
 

@@ -3,8 +3,11 @@
 // ══════════════════════════════════════════════════════════
 // Supabase SQL: ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS bg_preset text default 'none';
 // Supabase SQL: ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS bg_custom_url text default '';
+// Supabase SQL: ALTER TABLE public.chat_messages ADD COLUMN IF NOT EXISTS attachment_path text;
+// Supabase SQL: ALTER TABLE public.chat_messages ADD COLUMN IF NOT EXISTS attachment_type text;
+// Supabase SQL: ALTER TABLE public.chat_messages ADD COLUMN IF NOT EXISTS attachment_name text;
 
-const BACKEND_URL = '';
+const BACKEND_URL = (window.NO_SIGNAL_BACKEND_URL || '').replace(/\/$/, '');
 let sb = null; // Supabase client
 
 // ══════════════════════════════════════════════════════════
@@ -38,6 +41,9 @@ const BG_GRADIENTS = {
   ember:  'linear-gradient(135deg,#1a0a0a,#2f1010,#1a0808)',
 };
 
+const SIGNED_URL_CACHE_TTL_MS = 55 * 60 * 1000;
+const signedUrlCache = new Map();
+
 // ══════════════════════════════════════════════════════════
 // STATE
 // ══════════════════════════════════════════════════════════
@@ -62,6 +68,7 @@ const state = {
   modelVision:     {}, // { key: bool } from config
   attachedFile:    null,
   attachedImageUrl:null,
+  attachedFilePath:null,
 };
 
 // ══════════════════════════════════════════════════════════
@@ -73,7 +80,7 @@ const $ = id => document.getElementById(id);
 // SUPABASE INIT
 // ══════════════════════════════════════════════════════════
 async function initSupabase() {
-  const res = await fetch('/api/config');
+  const res = await fetch(`${BACKEND_URL}/api/config`);
   const cfg = await res.json();
   sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
   window.sb = sb;
@@ -336,11 +343,22 @@ async function activateSession(id) {
 
   // Load messages lazily
   if (!session._loaded) {
-    const { data: msgs } = await sb
+    let msgs = null;
+    let error = null;
+    ({ data: msgs, error } = await sb
       .from('chat_messages')
-      .select('id, role, content')
+      .select('id, role, content, attachment_path, attachment_type, attachment_name')
       .eq('session_id', id)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true }));
+    if (error) {
+      console.warn('load messages with attachments failed, retrying without:', error.message ?? error);
+      ({ data: msgs, error } = await sb
+        .from('chat_messages')
+        .select('id, role, content')
+        .eq('session_id', id)
+        .order('created_at', { ascending: true }));
+      if (error) console.error('load messages error:', error);
+    }
     session.messages = msgs ?? [];
     session._loaded  = true;
   }
@@ -350,10 +368,26 @@ async function activateSession(id) {
   setInputEnabled(!state.isWaiting);
 }
 
-async function persistMessage(sessionId, role, content) {
-  const { data } = await sb.from('chat_messages')
-    .insert({ session_id: sessionId, role, content })
-    .select('id').single();
+async function persistMessage(sessionId, role, content, attachment = null) {
+  const base = { session_id: sessionId, role, content };
+  let data = null;
+  let error = null;
+
+  ({ data, error } = await sb.from('chat_messages')
+    .insert(attachment ? { ...base, ...attachment } : base)
+    .select('id').single());
+
+  if (error && attachment) {
+    console.warn('persistMessage attachment failed, retrying without:', error.message ?? error);
+    ({ data, error } = await sb.from('chat_messages')
+      .insert(base)
+      .select('id').single());
+  }
+
+  if (error) {
+    console.error('persistMessage error:', error);
+    return null;
+  }
   // Touch updated_at on session
   await sb.from('chat_sessions')
     .update({ updated_at: new Date().toISOString() })
@@ -381,15 +415,23 @@ async function sendMessage() {
 
   const userContent = content || '📎 [image]';
 
+  const attachedUrl  = state.attachedImageUrl;
+  const attachedPath = state.attachedFilePath;
+  const attachedFile = state.attachedFile;
+  const attachmentMeta = attachedPath ? {
+    attachment_path: attachedPath,
+    attachment_type: attachedFile?.type ?? '',
+    attachment_name: attachedFile?.name ?? 'attachment',
+  } : null;
+
   // Add user message locally and persist
-  session.messages.push({ role: 'user', content: userContent });
+  session.messages.push({ role: 'user', content: userContent, ...(attachmentMeta ?? {}) });
   const userMsgIndex = session.messages.length - 1;
-  appendMessage('user', userContent, true, userMsgIndex);
+  appendMessage({ role: 'user', content: userContent, ...(attachmentMeta ?? {}) }, true, userMsgIndex);
   $('user-input').value = '';
   autoResize();
 
   // Clear attachment UI
-  const attachedUrl = state.attachedImageUrl;
   clearAttachment();
 
   state.isWaiting = true;
@@ -397,7 +439,7 @@ async function sendMessage() {
   showTypingIndicator();
 
   // Persist user message (fire & forget)
-  persistMessage(session.id, 'user', userContent);
+  persistMessage(session.id, 'user', userContent, attachmentMeta);
 
   try {
     const { data: { session: authSession } } = await sb.auth.getSession();
@@ -415,7 +457,7 @@ async function sendMessage() {
     }
   } catch (err) {
     removeTypingIndicator();
-    appendMessage('assistant', `⚠️ Error: ${err.message}`, true, session.messages.length);
+    appendMessage({ role: 'assistant', content: `⚠️ Error: ${err.message}` }, true, session.messages.length);
   }
 
   state.isWaiting = false;
@@ -617,7 +659,6 @@ function enableMessageEditing(div, _role, msgIndex) {
         if (session.messages[msgIndex]) {
           session.messages[msgIndex].content = newContent;
         }
-        saveSessions();
         renderMessages();
       });
     });
@@ -643,7 +684,6 @@ function enableMessageEditing(div, _role, msgIndex) {
         session.messages[msgIndex].content = editedContent;
       }
       session.messages = session.messages.slice(0, msgIndex + 1);
-      saveSessions();
 
       // Re-render messages up to this point
       renderMessages();
@@ -660,13 +700,12 @@ function enableMessageEditing(div, _role, msgIndex) {
         session.messages.push({ role: 'assistant', content: reply });
       } catch (err) {
         removeTypingIndicator();
-        appendMessage('assistant', `Error: ${err.message}`, true, session.messages.length);
+        appendMessage({ role: 'assistant', content: `Error: ${err.message}` }, true, session.messages.length);
       }
 
       state.isWaiting = false;
       setInputEnabled(true);
       $('user-input').focus();
-      saveSessions();
     });
   }
 }
@@ -1134,7 +1173,7 @@ function renderMessages() {
     return;
   }
 
-  session.messages.forEach((msg, index) => appendMessage(msg.role, msg.content, false, index));
+  session.messages.forEach((msg, index) => appendMessage(msg, false, index));
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
@@ -1180,7 +1219,7 @@ async function uploadFile(file) {
     const formData = new FormData();
     formData.append('file', file);
 
-    const res = await fetch('/api/upload', {
+    const res = await fetch(`${BACKEND_URL}/api/upload`, {
       method:  'POST',
       headers: { 'Authorization': `Bearer ${authSession?.access_token}` },
       body:    formData,
@@ -1191,9 +1230,10 @@ async function uploadFile(file) {
       throw new Error(err.error ?? 'Upload failed');
     }
 
-    const { url, type } = await res.json();
+    const { url, type, path } = await res.json();
     state.attachedImageUrl = url;
     state.attachedFile     = file;
+    state.attachedFilePath = path ?? null;
 
     // Show preview
     const previewEl = $('attach-preview');
@@ -1218,10 +1258,43 @@ async function uploadFile(file) {
 function clearAttachment() {
   state.attachedFile     = null;
   state.attachedImageUrl = null;
+  state.attachedFilePath = null;
   const previewEl = $('attach-preview');
   if (previewEl) { previewEl.innerHTML = ''; previewEl.classList.add('hidden'); }
   const fileInput = $('file-input');
   if (fileInput) fileInput.value = '';
+}
+
+function getCachedSignedUrl(path) {
+  const cached = signedUrlCache.get(path);
+  if (!cached) return null;
+  if (Date.now() > cached.expiresAt) {
+    signedUrlCache.delete(path);
+    return null;
+  }
+  return cached.url;
+}
+
+function setCachedSignedUrl(path, url) {
+  signedUrlCache.set(path, { url, expiresAt: Date.now() + SIGNED_URL_CACHE_TTL_MS });
+}
+
+async function getSignedUrl(path) {
+  const cached = getCachedSignedUrl(path);
+  if (cached) return cached;
+
+  const { data: { session: authSession } } = await sb.auth.getSession();
+  const res = await fetch(`${BACKEND_URL}/api/uploads/signed?path=${encodeURIComponent(path)}`, {
+    headers: { 'Authorization': `Bearer ${authSession?.access_token}` },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? `HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  if (!data?.url) throw new Error('Signed URL missing');
+  setCachedSignedUrl(path, data.url);
+  return data.url;
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1229,7 +1302,7 @@ function clearAttachment() {
 // ══════════════════════════════════════════════════════════
 async function loadAnnouncements() {
   try {
-    const res = await fetch('/api/announcements');
+  const res = await fetch(`${BACKEND_URL}/api/announcements`);
     state.announcements = await res.json();
   } catch (e) {
     console.error('Failed to load announcements:', e);
@@ -1295,7 +1368,7 @@ async function postAnnouncement() {
 
   try {
     const { data: { session: authSession } } = await sb.auth.getSession();
-    const res = await fetch('/api/announcements', {
+    const res = await fetch(`${BACKEND_URL}/api/announcements`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1321,12 +1394,70 @@ async function postAnnouncement() {
   }
 }
 
-function appendMessage(role, content, scroll = true, msgIndex) {
+function getAttachmentFromMsg(msg) {
+  if (!msg) return null;
+  const path = msg.attachment_path ?? msg.attachmentPath ?? '';
+  if (!path) return null;
+  return {
+    path,
+    type: msg.attachment_type ?? msg.attachmentType ?? '',
+    name: msg.attachment_name ?? msg.attachmentName ?? 'attachment',
+  };
+}
+
+async function hydrateAttachment(container, attachment) {
+  container.textContent = 'Chargement...';
+  try {
+    const url = await getSignedUrl(attachment.path);
+    container.textContent = '';
+
+    const item = document.createElement('div');
+    item.className = 'attach-item message-attach-item';
+
+    if (attachment.type.startsWith('image/')) {
+      const link = document.createElement('a');
+      link.href = url;
+      link.target = '_blank';
+      link.rel = 'noopener';
+
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = attachment.name;
+      img.className = 'attach-thumb message-attach-thumb';
+
+      link.appendChild(img);
+      item.appendChild(link);
+    } else {
+      const icon = document.createElement('span');
+      icon.className = 'attach-icon';
+      icon.textContent = '📄';
+      item.appendChild(icon);
+
+      const link = document.createElement('a');
+      link.href = url;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.className = 'attach-name message-attach-link';
+      link.textContent = attachment.name;
+      item.appendChild(link);
+    }
+
+    container.appendChild(item);
+  } catch (err) {
+    console.error('Failed to hydrate attachment:', err);
+    container.textContent = 'Pièce jointe indisponible';
+  }
+}
+
+function appendMessage(msg, scroll = true, msgIndex) {
   const messagesEl = $('messages');
 
   const empty = messagesEl.querySelector('#empty-state');
   if (empty) empty.remove();
 
+  const role = msg?.role ?? 'assistant';
+  const content = msg?.content ?? '';
+  const attachment = getAttachmentFromMsg(msg);
   const isUser = role === 'user';
   const avatarEmoji = state.activeCharacter?.avatar_emoji;
   const charName = state.activeCharacter?.name ?? 'AI';
@@ -1350,6 +1481,14 @@ function appendMessage(role, content, scroll = true, msgIndex) {
     </div>
   `;
   messagesEl.appendChild(div);
+
+  if (attachment) {
+    const wrapper = div.querySelector('.message-bubble-wrapper');
+    const attachWrap = document.createElement('div');
+    attachWrap.className = 'message-attachment';
+    wrapper.appendChild(attachWrap);
+    hydrateAttachment(attachWrap, attachment);
+  }
 
   enableMessageEditing(div, role, msgIndex);
 
@@ -1479,7 +1618,7 @@ function openMemoryModal() {
 // ══════════════════════════════════════════════════════════
 async function openDevPanel() {
   const { data: { session: authSession } } = await sb.auth.getSession();
-  const res = await fetch('/api/dev/stats', {
+  const res = await fetch(`${BACKEND_URL}/api/dev/stats`, {
     headers: { Authorization: `Bearer ${authSession?.access_token}` }
   });
   const stats = await res.json();

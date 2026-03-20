@@ -1,14 +1,21 @@
 import express      from 'express';
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import { dirname, resolve } from 'path';
 import { createClient } from '@supabase/supabase-js';
 import Stripe          from 'stripe';
 import rateLimit       from 'express-rate-limit';
 import multer          from 'multer';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const FRONTEND_DIR = resolve(__dirname, '../frontend');
+
 const app  = express();
 const PORT = process.env.PORT || 3000;
+const SIGNED_URL_TTL_SECONDS = Number(process.env.UPLOAD_URL_TTL_SECONDS) || 60 * 60;
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN ?? '')
+  .split(',')
+  .map(o => o.trim().replace(/\/$/, ''))
+  .filter(Boolean);
 
 // ── Model registry ──────────────────────────────────────────
 const MODEL_REGISTRY = {
@@ -68,7 +75,21 @@ const apiLimiter = rateLimit({
 });
 
 // ── Middleware ──────────────────────────────────────────────
-app.use(express.static(__dirname));
+app.use((req, res, next) => {
+  const origin = req.headers.origin?.replace(/\/$/, '');
+  if (origin && ALLOWED_ORIGINS.length > 0 && !ALLOWED_ORIGINS.includes(origin)) {
+    return res.status(403).json({ error: 'Origin not allowed.' });
+  }
+  if (origin && (ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+app.use(express.static(FRONTEND_DIR));
 app.use(express.json({ limit: '2mb' }));
 app.use('/api', apiLimiter);
 
@@ -307,8 +328,34 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
 
   if (error) return res.status(500).json({ error: error.message });
 
-  const { data: urlData } = supabaseAdmin.storage.from('uploads').getPublicUrl(data.path);
-  res.json({ url: urlData.publicUrl, type: file.mimetype, name: file.originalname });
+  // Private bucket: return a short-lived signed URL
+  const { data: signed, error: signErr } = await supabaseAdmin.storage
+    .from('uploads')
+    .createSignedUrl(data.path, SIGNED_URL_TTL_SECONDS);
+  if (signErr) return res.status(500).json({ error: signErr.message });
+
+  res.json({
+    url:  signed.signedUrl,
+    path: data.path,
+    type: file.mimetype,
+    name: file.originalname,
+  });
+});
+
+// ── GET /api/uploads/signed ─────────────────────────────────
+app.get('/api/uploads/signed', requireAuth, async (req, res) => {
+  const path = typeof req.query.path === 'string' ? req.query.path : '';
+  if (!path) return res.status(400).json({ error: 'path requis.' });
+  if (!path.startsWith(`${req.user.id}/`)) {
+    return res.status(403).json({ error: 'Accès refusé.' });
+  }
+
+  const { data, error } = await supabaseAdmin.storage
+    .from('uploads')
+    .createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ url: data.signedUrl });
 });
 
 // ── GET /api/dev/stats ──────────────────────────────────────
