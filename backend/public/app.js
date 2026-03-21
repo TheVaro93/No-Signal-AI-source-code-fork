@@ -883,6 +883,10 @@ function renderGreeting() {
 // NAVIGATION
 // ══════════════════════════════════════════════════════════
 function switchNav(section) {
+  if (section === 'characters') {
+    window.location.href = '/characters.html';
+    return;
+  }
   document.querySelectorAll('.nav-item').forEach(item => {
     item.classList.toggle('active', item.dataset.section === section);
   });

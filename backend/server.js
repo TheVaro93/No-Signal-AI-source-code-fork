@@ -77,10 +77,17 @@ const apiLimiter = rateLimit({
 // ── Middleware ──────────────────────────────────────────────
 app.use((req, res, next) => {
   const origin = req.headers.origin?.replace(/\/$/, '');
-  if (origin && ALLOWED_ORIGINS.length > 0 && !ALLOWED_ORIGINS.includes(origin)) {
+  // Always allow same-origin requests (browser sends Origin on POST/PUT/DELETE even for same domain)
+  const ownOrigin = `https://${req.headers.host}`;
+  const isAllowed = !origin
+    || ALLOWED_ORIGINS.length === 0
+    || ALLOWED_ORIGINS.includes(origin)
+    || origin === ownOrigin;
+
+  if (origin && !isAllowed) {
     return res.status(403).json({ error: 'Origin not allowed.' });
   }
-  if (origin && (ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin))) {
+  if (origin && isAllowed) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
   }
