@@ -279,6 +279,8 @@
       color: #f08080;
       display: none;
     }
+
+    .text-danger { color: var(--danger); }
   </style>
 </head>
 <body>
@@ -303,45 +305,47 @@
 
   <!-- Modal -->
   <div id="modal-overlay" class="hidden">
-    <div id="modal-box">
-      <div id="modal-title">Nouveau personnage</div>
+    <div id="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title">Nouveau personnage</h2>
 
-      <div id="modal-error"></div>
+      <form id="char-form">
+        <div id="modal-error"></div>
 
-      <!-- Avatar -->
-      <div id="avatar-section">
-        <div id="avatar-preview">◈</div>
-        <div>
-          <button type="button" id="btn-upload-avatar">Choisir une image</button>
-          <input type="file" id="avatar-file-input" accept="image/*" style="display:none" />
-          <div id="upload-error"></div>
+        <!-- Avatar -->
+        <div id="avatar-section">
+          <div id="avatar-preview">◈</div>
+          <div>
+            <button type="button" id="btn-upload-avatar">Choisir une image</button>
+            <input type="file" id="avatar-file-input" accept="image/*" aria-label="Image d'avatar" style="display:none" />
+            <div id="upload-error"></div>
+          </div>
         </div>
-      </div>
 
-      <div class="field-group">
-        <label class="field-label" for="field-name">Nom <span style="color:var(--danger)">*</span></label>
-        <input class="field-input" type="text" id="field-name" placeholder="Nom du personnage" maxlength="100" />
-      </div>
+        <div class="field-group">
+          <label class="field-label" for="field-name">Nom <span class="text-danger" aria-hidden="true">*</span></label>
+          <input class="field-input" type="text" id="field-name" placeholder="Nom du personnage" maxlength="100" aria-required="true" />
+        </div>
 
-      <div class="field-group">
-        <label class="field-label" for="field-personality">Personnalité</label>
-        <textarea class="field-textarea" id="field-personality" placeholder="Décris la personnalité…" maxlength="1000"></textarea>
-      </div>
+        <div class="field-group">
+          <label class="field-label" for="field-personality">Personnalité</label>
+          <textarea class="field-textarea" id="field-personality" placeholder="Décris la personnalité…" maxlength="1000"></textarea>
+        </div>
 
-      <div class="field-group">
-        <label class="field-label" for="field-tone">Ton</label>
-        <textarea class="field-textarea" id="field-tone" placeholder="Ton de voix, style d'expression…" maxlength="1000"></textarea>
-      </div>
+        <div class="field-group">
+          <label class="field-label" for="field-tone">Ton</label>
+          <textarea class="field-textarea" id="field-tone" placeholder="Ton de voix, style d'expression…" maxlength="1000"></textarea>
+        </div>
 
-      <div class="field-group">
-        <label class="field-label" for="field-lore">Lore</label>
-        <textarea class="field-textarea" id="field-lore" placeholder="Histoire, contexte, background…" maxlength="2000"></textarea>
-      </div>
+        <div class="field-group">
+          <label class="field-label" for="field-lore">Lore</label>
+          <textarea class="field-textarea" id="field-lore" placeholder="Histoire, contexte, background…" maxlength="2000"></textarea>
+        </div>
 
-      <div id="modal-actions">
-        <button type="button" id="btn-modal-cancel">Annuler</button>
-        <button type="button" id="btn-modal-save">Sauvegarder</button>
-      </div>
+        <div id="modal-actions">
+          <button type="button" id="btn-modal-cancel">Annuler</button>
+          <button type="submit" id="btn-modal-save">Sauvegarder</button>
+        </div>
+      </form>
     </div>
   </div>
 
