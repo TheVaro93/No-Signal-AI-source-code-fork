@@ -446,18 +446,19 @@ app.post('/api/characters', requireAuth, async (req, res) => {
   const { name, personality = '', tone = '', lore = '', avatar_url = '' } = req.body;
   if (!name?.trim())               return res.status(400).json({ error: 'Le nom est requis.' });
   if (name.trim().length > 100)    return res.status(400).json({ error: 'Nom trop long (max 100).' });
-  const personalityT = personality.trim();
-  const toneT        = tone.trim();
-  const loreT        = lore.trim();
+  const personalityT = String(personality ?? '').trim();
+  const toneT        = String(tone ?? '').trim();
+  const loreT        = String(lore ?? '').trim();
   if (personalityT.length > 1000)  return res.status(400).json({ error: 'Personnalité trop longue (max 1000).' });
   if (toneT.length > 1000)         return res.status(400).json({ error: 'Ton trop long (max 1000).' });
   if (loreT.length > 2000)         return res.status(400).json({ error: 'Lore trop long (max 2000).' });
-  if (avatar_url && avatar_url.length > 500)    return res.status(400).json({ error: 'URL avatar trop longue (max 500).' });
-  if (avatar_url && !avatar_url.startsWith('https://')) return res.status(400).json({ error: 'URL avatar invalide.' });
+  const avatar_urlT = String(avatar_url ?? '').trim();
+  if (avatar_urlT.length > 500)                        return res.status(400).json({ error: 'URL avatar trop longue (max 500).' });
+  if (avatar_urlT && !avatar_urlT.startsWith('https://')) return res.status(400).json({ error: 'URL avatar invalide.' });
 
   const { data, error } = await supabaseAdmin
     .from('characters')
-    .insert({ user_id: req.user.id, name: name.trim(), personality: personalityT, tone: toneT, lore: loreT, avatar_url })
+    .insert({ user_id: req.user.id, name: name.trim(), personality: personalityT, tone: toneT, lore: loreT, avatar_url: avatar_urlT })
     .select()
     .single();
   if (error) return res.status(500).json({ error: error.message });
@@ -471,19 +472,20 @@ app.put('/api/characters/:id', requireAuth, async (req, res) => {
   if (!name?.trim())               return res.status(400).json({ error: 'Le nom est requis.' });
   if (name.trim().length > 100)    return res.status(400).json({ error: 'Nom trop long (max 100).' });
 
-  const personalityT = personality.trim();
-  const toneT        = tone.trim();
-  const loreT        = lore.trim();
+  const personalityT = String(personality ?? '').trim();
+  const toneT        = String(tone ?? '').trim();
+  const loreT        = String(lore ?? '').trim();
 
   if (personalityT.length > 1000)  return res.status(400).json({ error: 'Personnalité trop longue (max 1000).' });
   if (toneT.length > 1000)         return res.status(400).json({ error: 'Ton trop long (max 1000).' });
   if (loreT.length > 2000)         return res.status(400).json({ error: 'Lore trop long (max 2000).' });
-  if (avatar_url && avatar_url.length > 500)           return res.status(400).json({ error: 'URL avatar trop longue (max 500).' });
-  if (avatar_url && !avatar_url.startsWith('https://')) return res.status(400).json({ error: 'URL avatar invalide.' });
+  const avatar_urlT = String(avatar_url ?? '').trim();
+  if (avatar_urlT.length > 500)                           return res.status(400).json({ error: 'URL avatar trop longue (max 500).' });
+  if (avatar_urlT && !avatar_urlT.startsWith('https://')) return res.status(400).json({ error: 'URL avatar invalide.' });
 
   const { data, error } = await supabaseAdmin
     .from('characters')
-    .update({ name: name.trim(), personality: personalityT, tone: toneT, lore: loreT, avatar_url })
+    .update({ name: name.trim(), personality: personalityT, tone: toneT, lore: loreT, avatar_url: avatar_urlT })
     .eq('id', id)
     .eq('user_id', req.user.id)
     .select()
