@@ -1271,6 +1271,113 @@ function buildDropdownItem(icon, label, onClick) {
   return item;
 }
 
+// ── Session action handlers ──────────────────────────────────
+let _renameTarget = null;
+
+function openRenameModal(session) {
+  _renameTarget = session;
+  $('session-rename-input').value = session.name ?? '';
+  $('session-rename-modal').style.display = 'flex';
+  setTimeout(() => $('session-rename-input').select(), 50);
+}
+
+async function saveRename() {
+  if (!_renameTarget) return;
+  const name = $('session-rename-input').value.trim();
+  if (!name) return;
+
+  const oldName = _renameTarget.name;
+  _renameTarget.name = name;
+  if (state.activeSession === _renameTarget.id) $('chat-title').textContent = name;
+  renderSessions();
+  $('session-rename-modal').style.display = 'none';
+
+  const { data: { session: authSession } } = await sb.auth.getSession();
+  const res = await fetch(`${BACKEND_URL}/api/sessions/${_renameTarget.id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.access_token}` },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    _renameTarget.name = oldName;
+    if (state.activeSession === _renameTarget.id) $('chat-title').textContent = oldName;
+    renderSessions();
+    console.error('Rename failed:', await res.text());
+  }
+  _renameTarget = null;
+}
+
+$('session-rename-cancel').addEventListener('click', () => {
+  $('session-rename-modal').style.display = 'none';
+  _renameTarget = null;
+});
+$('session-rename-save').addEventListener('click', saveRename);
+$('session-rename-input').addEventListener('keydown', e => { if (e.key === 'Enter') saveRename(); });
+
+let _deleteTarget = null;
+
+function openDeleteModal(session) {
+  _deleteTarget = session;
+  $('session-delete-modal').style.display = 'flex';
+}
+
+async function confirmDelete() {
+  if (!_deleteTarget) return;
+  const session = _deleteTarget;
+  $('session-delete-modal').style.display = 'none';
+  _deleteTarget = null;
+
+  const wasActive = state.activeSession === session.id;
+  state.sessions = state.sessions.filter(s => s.id !== session.id);
+  if (wasActive) {
+    const remaining = state.sessions.filter(s => !s.archived);
+    if (remaining.length > 0) {
+      await activateSession(remaining[0].id);
+    } else {
+      state.activeSession = null;
+      localStorage.removeItem('nosignal_active_session');
+      $('chat-title').textContent = 'Sélectionnez une session';
+      renderMessages();
+      setInputEnabled(false);
+    }
+  }
+  renderSessions();
+
+  const { data: { session: authSession } } = await sb.auth.getSession();
+  const res = await fetch(`${BACKEND_URL}/api/sessions/${session.id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${authSession.access_token}` },
+  });
+  if (!res.ok) {
+    console.error('Delete failed:', await res.text());
+    await loadSessions();
+  }
+}
+
+$('session-delete-cancel').addEventListener('click', () => {
+  $('session-delete-modal').style.display = 'none';
+  _deleteTarget = null;
+});
+$('session-delete-confirm').addEventListener('click', confirmDelete);
+
+async function toggleArchiveSession(session) {
+  const newArchived = !session.archived;
+  session.archived = newArchived;
+  renderSessions();
+
+  const { data: { session: authSession } } = await sb.auth.getSession();
+  const res = await fetch(`${BACKEND_URL}/api/sessions/${session.id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.access_token}` },
+    body: JSON.stringify({ archived: newArchived }),
+  });
+  if (!res.ok) {
+    session.archived = !newArchived;
+    renderSessions();
+    console.error('Archive toggle failed:', await res.text());
+  }
+}
+
 function renderMessages() {
   const session = getCurrentSession();
   const messagesEl = $('messages');
