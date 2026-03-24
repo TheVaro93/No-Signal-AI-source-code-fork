@@ -1135,67 +1135,140 @@ function closeAllSessionMenus() {
 }
 document.addEventListener('click', closeAllSessionMenus);
 
-// ── Render sessions with rename/delete ──────────
+// ── Render sessions ──────────────────────────────────────────
 function renderSessions() {
   const list = $('session-list');
-  list.innerHTML = '';
+  list.textContent = ''; // safe DOM clear
+  closeAllSessionMenus();
 
-  state.sessions.forEach(session => {
-    const li = document.createElement('li');
-    li.dataset.id = session.id;
-    if (session.id === state.activeSession) li.classList.add('active');
+  const active   = state.sessions.filter(s => !s.archived);
+  const archived = state.sessions.filter(s => s.archived);
 
-    const nameSpan = document.createElement('span');
-    nameSpan.className = 'session-name';
-    nameSpan.textContent = session.name;
-    nameSpan.title = session.name;
-    nameSpan.addEventListener('click', () => activateSession(session.id));
+  active.forEach(session => list.appendChild(buildSessionCard(session)));
 
-    const actions = document.createElement('div');
-    actions.className = 'session-actions';
+  if (archived.length > 0) {
+    const toggle = document.createElement('div');
+    toggle.className = 'archived-toggle';
 
-    const renameBtn = document.createElement('button');
-    renameBtn.className = 'btn-icon';
-    renameBtn.title = 'Rename';
-    renameBtn.textContent = '✏';
-    renameBtn.addEventListener('click', async e => {
-      e.stopPropagation();
-      const newName = prompt('Rename session:', session.name);
-      if (newName?.trim()) {
-        session.name = newName.trim();
-        if (state.activeSession === session.id) $('chat-title').textContent = session.name;
-        await sb.from('chat_sessions').update({ name: session.name }).eq('id', session.id);
-        renderSessions();
-      }
+    const chevron = document.createElement('span');
+    chevron.className = 'archived-chevron';
+    chevron.textContent = '▶';
+
+    const label = document.createElement('span');
+    label.textContent = ` Archivées (${archived.length})`;
+
+    toggle.appendChild(chevron);
+    toggle.appendChild(label);
+
+    const archivedList = document.createElement('div');
+    archivedList.className = 'archived-list';
+
+    toggle.addEventListener('click', () => {
+      archivedList.classList.toggle('open');
+      chevron.classList.toggle('open');
     });
 
-    const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'btn-icon';
-    deleteBtn.title = 'Delete';
-    deleteBtn.textContent = '✕';
-    deleteBtn.addEventListener('click', async e => {
-      e.stopPropagation();
-      if (!confirm(`Supprimer la session "${session.name}" ?`)) return;
-      const wasActive = state.activeSession === session.id;
-      await sb.from('chat_sessions').delete().eq('id', session.id);
-      state.sessions = state.sessions.filter(s => s.id !== session.id);
-      if (wasActive) {
-        state.activeSession = null;
-        localStorage.removeItem('nosignal_active_session');
-        $('chat-title').textContent = 'Sélectionnez une session';
-        renderMessages();
-        setInputEnabled(false);
-      }
-      renderSessions();
+    archived.forEach(session => {
+      const card = buildSessionCard(session);
+      card.classList.add('archived-card');
+      archivedList.appendChild(card);
     });
 
-    actions.appendChild(renameBtn);
-    actions.appendChild(deleteBtn);
+    list.appendChild(toggle);
+    list.appendChild(archivedList);
+  }
+}
 
-    li.appendChild(nameSpan);
-    li.appendChild(actions);
-    list.appendChild(li);
+function buildSessionCard(session) {
+  const li = document.createElement('li');
+  li.dataset.id = session.id;
+  if (session.id === state.activeSession) li.classList.add('active');
+
+  li.appendChild(sessionAvatar(session));
+
+  const info = document.createElement('div');
+  info.className = 'session-info';
+
+  const top = document.createElement('div');
+  top.className = 'session-top';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'session-name';
+  nameEl.textContent = session.name ?? 'Session';
+
+  const timeEl = document.createElement('span');
+  timeEl.className = 'session-time';
+  timeEl.textContent = relativeTime(session.last_message_at ?? session.updated_at);
+
+  top.appendChild(nameEl);
+  top.appendChild(timeEl);
+
+  const preview = document.createElement('div');
+  preview.className = 'session-preview';
+  preview.textContent = session.last_message_preview ?? '';
+
+  info.appendChild(top);
+  info.appendChild(preview);
+  li.appendChild(info);
+
+  li.addEventListener('click', () => activateSession(session.id));
+
+  // Menu button
+  const menuBtn = document.createElement('button');
+  menuBtn.className = 'session-menu-btn';
+  menuBtn.textContent = '⋯';
+  menuBtn.title = 'Options';
+
+  // Dropdown
+  const dropdown = document.createElement('div');
+  dropdown.className = 'session-dropdown';
+
+  dropdown.appendChild(buildDropdownItem('✏️', 'Renommer', () => openRenameModal(session)));
+  dropdown.appendChild(buildDropdownItem('📦', session.archived ? 'Désarchiver' : 'Archiver', () => toggleArchiveSession(session)));
+
+  const divider = document.createElement('div');
+  divider.className = 'session-dropdown-divider';
+  dropdown.appendChild(divider);
+
+  const deleteItem = buildDropdownItem('🗑️', 'Supprimer', () => openDeleteModal(session));
+  deleteItem.classList.add('danger');
+  dropdown.appendChild(deleteItem);
+
+  // Prevent clicks in dropdown padding from activating the session card
+  dropdown.addEventListener('click', e => e.stopPropagation());
+
+  menuBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const isOpen = dropdown.classList.contains('open');
+    closeAllSessionMenus();
+    if (!isOpen) dropdown.classList.add('open');
   });
+
+  li.appendChild(menuBtn);
+  li.appendChild(dropdown);
+
+  return li;
+}
+
+function buildDropdownItem(icon, label, onClick) {
+  const item = document.createElement('div');
+  item.className = 'session-dropdown-item';
+
+  const iconEl = document.createElement('span');
+  iconEl.textContent = icon;
+
+  const labelEl = document.createElement('span');
+  labelEl.textContent = label;
+
+  item.appendChild(iconEl);
+  item.appendChild(labelEl);
+
+  item.addEventListener('click', e => {
+    e.stopPropagation();
+    closeAllSessionMenus();
+    onClick();
+  });
+  return item;
 }
 
 function renderMessages() {
