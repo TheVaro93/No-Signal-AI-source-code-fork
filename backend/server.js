@@ -423,6 +423,52 @@ app.post('/api/announcements', requireAuth, async (req, res) => {
   res.json(data);
 });
 
+// ── PATCH /api/sessions/:id ─────────────────────────────────
+app.patch('/api/sessions/:id', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { name, archived } = req.body;
+  const updates = {};
+
+  if (name !== undefined) {
+    const trimmed = String(name).trim();
+    if (!trimmed) return res.status(400).json({ error: 'Le nom ne peut pas être vide.' });
+    if (trimmed.length > 100) return res.status(400).json({ error: 'Nom trop long (max 100 caractères).' });
+    updates.name = trimmed;
+  }
+  if (archived !== undefined) {
+    updates.archived = Boolean(archived);
+  }
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+  }
+
+  const { error } = await supabaseAdmin
+    .from('chat_sessions')
+    .update(updates)
+    .eq('id', id)
+    .eq('user_id', req.user.id);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// ── DELETE /api/sessions/:id ─────────────────────────────────
+app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
+  const { id } = req.params;
+
+  // Delete messages first (chat_messages has no user_id column)
+  await supabaseAdmin.from('chat_messages').delete().eq('session_id', id);
+
+  const { error } = await supabaseAdmin
+    .from('chat_sessions')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', req.user.id);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
 // ── Health ──────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2.0' }));
 
