@@ -298,8 +298,7 @@ async function loadSessions() {
     .from('chat_sessions')
     .select('*')
     .eq('user_id', state.user.id)
-    .order('updated_at', { ascending: false })
-    .limit(50);
+    .order('last_message_at', { ascending: false, nullsFirst: false });
 
   if (error) { console.error('loadSessions error:', error); return; }
   state.sessions = (data ?? []).map(s => ({ ...s, messages: [], _loaded: false }));
