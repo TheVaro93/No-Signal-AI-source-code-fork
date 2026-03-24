@@ -389,6 +389,30 @@
       </div>
     </div>
 
+    <!-- Session rename modal -->
+    <div id="session-rename-modal" class="session-modal-overlay" style="display:none">
+      <div class="session-modal">
+        <h3>Renommer la session</h3>
+        <input type="text" id="session-rename-input" placeholder="Nom de la session" maxlength="100">
+        <div class="session-modal-actions">
+          <button class="btn-modal-cancel" id="session-rename-cancel">Annuler</button>
+          <button class="btn-modal-save" id="session-rename-save">Enregistrer</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session delete modal -->
+    <div id="session-delete-modal" class="session-modal-overlay" style="display:none">
+      <div class="session-modal">
+        <h3 style="color:#f87171">Supprimer cette session ?</h3>
+        <p>Cette action est irréversible. Tous les messages seront perdus.</p>
+        <div class="session-modal-actions">
+          <button class="btn-modal-cancel" id="session-delete-cancel">Annuler</button>
+          <button class="btn-modal-delete" id="session-delete-confirm">Supprimer</button>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <script src="config.js"></script>
