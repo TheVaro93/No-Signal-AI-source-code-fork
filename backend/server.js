@@ -485,6 +485,9 @@ app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
   const { error: msgErr } = await supabaseAdmin.from('chat_messages').delete().eq('session_id', id);
   if (msgErr) console.error('chat_messages delete error:', msgErr.message);
 
+  // Delete associated RAG embeddings
+  await supabaseAdmin.from('memory_vectors').delete().eq('session_id', id);
+
   const { error } = await supabaseAdmin
     .from('chat_sessions')
     .delete()
