@@ -323,6 +323,19 @@ app.post('/chat', requireAuth, chatLimiter, async (req, res) => {
   }
   res.end();
 
+  // Update session preview (fire & forget)
+  if (sessionId && fullContent) {
+    supabaseAdmin
+      .from('chat_sessions')
+      .update({
+        last_message_preview: fullContent.slice(0, 80),
+        last_message_at: new Date().toISOString(),
+      })
+      .eq('id', sessionId)
+      .eq('user_id', req.user.id)
+      .then(({ error }) => { if (error) console.error('preview update error:', error.message); });
+  }
+
   // Store memory (fire & forget)
   if (process.env.HF_API_KEY && sessionId && fullContent) {
     const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
