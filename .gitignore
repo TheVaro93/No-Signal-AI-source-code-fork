@@ -3,8 +3,6 @@ node_modules/
 .worktrees/
 
 # contexte pours les IA utilisé dans l'appli; claude/Gemini/chatGPT/LLm open source auto-hébérger 
-CLAUDE.md
 AGENTS.md
 GEMINI.md
-docs/
 .private/
