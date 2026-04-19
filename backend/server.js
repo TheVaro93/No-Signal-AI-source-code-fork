@@ -588,6 +588,27 @@ app.get('/api/characters', requireAuth, async (req, res) => {
   res.json(data ?? []);
 });
 
+// ── GET /api/characters/public ──────────────────────────────
+app.get('/api/characters/public', async (req, res) => {
+  const { category } = req.query;
+  const VALID_CATEGORIES = ['anime', 'fantasy', 'sci-fi', 'historique', 'original', 'autre'];
+
+  let query = supabaseAdmin
+    .from('characters')
+    .select('id, name, personality, category, avatar_url, creator_username, created_at, chat_count')
+    .eq('is_public', true)
+    .order('created_at', { ascending: false })
+    .limit(100);
+
+  if (category && VALID_CATEGORIES.includes(category)) {
+    query = query.eq('category', category);
+  }
+
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data ?? []);
+});
+
 // ── POST /api/characters ────────────────────────────────────
 app.post('/api/characters', requireAuth, async (req, res) => {
   const { name, personality = '', tone = '', lore = '', avatar_url = '',
