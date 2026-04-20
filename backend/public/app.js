@@ -2166,7 +2166,27 @@ async function initGuestMode(charId) {
 // ══════════════════════════════════════════════════════════
 async function init() {
   await initSupabase();
-  await checkAuth();          // redirect to /auth.html if not logged in
+
+  // Detecter le contexte AVANT checkAuth()
+  const { data } = await sb.auth.getSession();
+  const session = data?.session ?? null;
+  const urlCharId = new URLSearchParams(window.location.search).get('character_id');
+
+  // Mode invite : pas de session + character_id dans l'URL (D-04)
+  if (!session && urlCharId) {
+    await initGuestMode(urlCharId);
+    return;
+  }
+
+  // Pas de session, pas de character_id -> rediriger vers discover.html
+  if (!session) {
+    window.location.replace('/discover.html');
+    return;
+  }
+
+  // --- Flux authentifie existant (inchange a partir d'ici) ---
+  state.user = session.user;
+  state.isDevAccount = state.devEmails.includes(state.user.email);
   await loadProfile();
   await loadMyCharacters();
   await loadCommunity();
@@ -2187,12 +2207,11 @@ async function init() {
 
   initEvents();
 
-  // Auto-select character when redirected from characters.html
-  const _charId = new URLSearchParams(window.location.search).get('character_id');
-  if (_charId) {
-    const _found = state.characters.find(c => c.id === _charId);
-    if (_found) {
-      state.activeCharacter = _found;
+  // Auto-select character when redirected from characters.html (flux auth existant)
+  if (urlCharId) {
+    const found = state.characters.find(c => c.id === urlCharId);
+    if (found) {
+      state.activeCharacter = found;
       renderActiveCharacter();
       renderCharacterList();
       window.history.replaceState({}, '', '/');
