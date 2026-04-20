@@ -168,6 +168,15 @@ async function requireAuth(req, res, next) {
   next();
 }
 
+// ── Optional auth middleware (guest-safe) ───────────────────
+async function optionalAuth(req, res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) { next(); return; }
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+  if (!error && user) req.user = user;
+  next();
+}
+
 // ── System prompt builder ───────────────────────────────────
 function buildSystemPrompt(character, summary, userPersona, ragContext) {
   const char = character ?? {};
@@ -266,7 +275,7 @@ app.get('/api/config', (_req, res) => {
 });
 
 // ── POST /chat (SSE streaming) ──────────────────────────────
-app.post('/chat', requireAuth, chatLimiter, async (req, res) => {
+app.post('/chat', optionalAuth, chatLimiter, async (req, res) => {
   const {
     character, messages, summary: existingSummary,
     userPersona, modelKey, sessionId, attachedImageUrl,
@@ -290,7 +299,7 @@ app.post('/chat', requireAuth, chatLimiter, async (req, res) => {
   // RAG search
   const embeddingsCfg = getEmbeddingsConfig();
   let ragContext = '';
-  if (embeddingsCfg?.apiKey && sessionId) {
+  if (req.user && embeddingsCfg?.apiKey && sessionId) {
     const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
     const emb = await embedText(lastUserMsg);
     const mems = await searchMemories(req.user.id, emb);
@@ -405,7 +414,7 @@ app.post('/chat', requireAuth, chatLimiter, async (req, res) => {
   res.end();
 
   // Update session preview (fire & forget)
-  if (sessionId && fullContent) {
+  if (req.user && sessionId && fullContent) {
     supabaseAdmin
       .from('chat_sessions')
       .update({
@@ -418,9 +427,16 @@ app.post('/chat', requireAuth, chatLimiter, async (req, res) => {
   }
 
   // Store memory (fire & forget)
-  if (embeddingsCfg?.apiKey && sessionId && fullContent) {
+  if (req.user && embeddingsCfg?.apiKey && sessionId && fullContent) {
     const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
     storeMemory(req.user.id, sessionId, lastUserMsg, fullContent, character?.name);
+  }
+
+  // Incrémenter chat_count pour les sessions invité (STAT-01)
+  if (!req.user && character?.id) {
+    supabaseAdmin
+      .rpc('increment_chat_count', { char_id: character.id })
+      .catch(err => console.error('increment_chat_count error:', err));
   }
 });
 
@@ -633,6 +649,19 @@ app.get('/api/characters/public', async (req, res) => {
   const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
   res.json(data ?? []);
+});
+
+// ── GET /api/characters/public/:id ─────────────────────────
+app.get('/api/characters/public/:id', async (req, res) => {
+  const { id } = req.params;
+  const { data, error } = await supabaseAdmin
+    .from('characters')
+    .select('id, name, personality, category, avatar_url, creator_username, chat_count, tone, lore, style')
+    .eq('id', id)
+    .eq('is_public', true)
+    .single();
+  if (error || !data) return res.status(404).json({ error: 'Personnage introuvable.' });
+  res.json(data);
 });
 
 // ── POST /api/characters ────────────────────────────────────
