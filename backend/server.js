@@ -433,7 +433,9 @@ app.post('/chat', optionalAuth, chatLimiter, async (req, res) => {
   }
 
   // Incrémenter chat_count pour les sessions invité (STAT-01)
-  if (!req.user && character?.id) {
+  // Valider UUID côté serveur avant d'appeler le RPC (CR-02)
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!req.user && character?.id && UUID_RE.test(character.id) && fullContent) {
     supabaseAdmin
       .rpc('increment_chat_count', { char_id: character.id })
       .catch(err => console.error('increment_chat_count error:', err));
