@@ -2183,12 +2183,14 @@ async function init() {
   const urlCharId = new URLSearchParams(window.location.search).get('character_id');
 
   // Mode invite : pas de session + character_id dans l'URL (D-04)
-  if (!session && urlCharId) {
+  // Valider le format UUID avant d'utiliser charId dans les URLs de fetch (WR-03)
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!session && urlCharId && UUID_RE.test(urlCharId)) {
     await initGuestMode(urlCharId);
     return;
   }
 
-  // Pas de session, pas de character_id -> rediriger vers discover.html
+  // Pas de session, pas de character_id valide -> rediriger vers discover.html
   if (!session) {
     window.location.replace('/discover.html');
     return;
