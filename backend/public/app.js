@@ -2081,6 +2081,11 @@ async function sendGuestMessage(charId, guestMessages) {
       }),
     });
 
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error ?? `Erreur serveur ${res.status}`);
+    }
+
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let fullContent = '';
