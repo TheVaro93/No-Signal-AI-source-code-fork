@@ -2067,12 +2067,17 @@ async function sendGuestMessage(charId, guestMessages) {
   showTypingIndicator();
 
   try {
+    // Cap messages sent over the wire to last 50 (mirrors saveGuestMessages cap)
+    const messagesSlice = guestMessages.length > 50
+      ? guestMessages.slice(guestMessages.length - 50)
+      : guestMessages;
+
     const res = await fetch(BACKEND_URL + '/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         character: state.activeCharacter,
-        messages: guestMessages,
+        messages: messagesSlice,
         summary: null,
         userPersona: { name: '', desc: '' },
         modelKey: state.modelKey,
